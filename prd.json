@@ -3,27 +3,32 @@
   "userStories": [
     {
       "id": "US-003",
-      "title": "Ajouter un menu de commandes '/' dans l'editeur",
+      "title": "Ajouter un menu de commandes '/' dans l'editeur : QUand on fait '/' il affiche un panneau avec des actions préfaites",
       "acceptanceCriteria": [
         "Taper '/' dans le corps de la note ouvre un menu de commandes pres du curseur",
         "Selectionner une commande insere un placeholder/une action a la position courante du curseur",
-        "Le menu se ferme avec Echap/tap en dehors et ne bloque jamais la saisie"
+        "Le menu se ferme avec Echap/tap/ecrire autre chose, en dehors et ne bloque jamais la saisie"
       ],
-      "priority": 3,
+      "priority": 1,
       "passes": false,
       "notes": "Base pour les actions IA (UX type Notion)."
     },
     {
-      "id": "US-004",
-      "title": "IA : Generer la suite du contenu via '/generate'",
+      "id": "US-005",
+      "title": "Integrer le streaming pour la génération d'ia notamment avec /generate",
       "acceptanceCriteria": [
-        "La commande '/generate' propose une continuation du contenu et l'insere a la position du curseur (non destructif)",
-        "Les requetes sont annulables (AbortController) et la derniere requete l'emporte",
-        "Les cles IA ne vont jamais cote client; les appels passent par le backend avec auth utilisateur"
+        "Taper '/generate' sur une ligne puis valider lance la generation et retire la ligne de commande du contenu",
+        "La generation est en streaming : un apercu du texte apparait progressivement (sans attendre la fin)",
+        "A la fin du streaming, la suggestion complete est inseree a la position initiale du curseur (non destructif)",
+        "Si le contenu a change pendant la generation, la suggestion n'est pas inseree (message explicite) et l'aperçu est abandonne",
+        "Les requetes sont annulables (AbortController) : annuler stoppe immediatement le flux et ne laisse aucun texte partiel insere",
+        "Latest request wins : relancer '/generate' annule la requete en cours, sans doublons ni courses",
+        "Les cles IA ne vont jamais cote client ; les appels passent par le backend avec auth utilisateur, y compris en streaming",
+        "Timeouts + erreurs reseau sont gerees proprement (message actionnable), sans casser l'edition"
       ],
-      "priority": 4,
-      "passes": true,
-      "notes": "Doit gerer les timeouts + erreurs proprement (production-ready)."
+      "priority": 2,
+      "passes": false,
+      "notes": "Streaming recommande via SSE/chunked response. Garder une insertion finale atomique (apercu pendant le flux, insertion seulement si la version du contenu n'a pas change). Ne pas spammer les sauvegardes pendant le streaming."
     }
   ]
 }
