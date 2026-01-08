@@ -115,6 +115,7 @@ export function NotesScreen({
   const draftContentRef = useRef(draftContent);
   const pendingGenerateRef = useRef<number | null>(null);
   const commandMeasureRef = useRef<{ x: number; y: number; width: number; height: number } | null>(null);
+  const commandDismissedRef = useRef<{ start: number; end: number; query: string; version: number } | null>(null);
   const scrollOffsetRef = useRef(0);
 
   const styles = useMemo(() => createStyles(theme), [theme]);
@@ -154,6 +155,7 @@ export function NotesScreen({
   useEffect(() => {
     if (!selectedNoteId) {
       setCommandState(null);
+      commandDismissedRef.current = null;
       return;
     }
     if (selection.start !== selection.end) {
@@ -161,6 +163,19 @@ export function NotesScreen({
       return;
     }
     const next = findSlashCommand(draftContent, selection.start);
+    const dismissed = commandDismissedRef.current;
+    if (
+      next &&
+      dismissed &&
+      editVersionRef.current === dismissed.version &&
+      next.start === dismissed.start &&
+      next.end === dismissed.end &&
+      next.query === dismissed.query
+    ) {
+      setCommandState(null);
+      return;
+    }
+    if (next) commandDismissedRef.current = null;
     setCommandState((prev) => {
       if (!next) return null;
       if (prev && prev.start === next.start && prev.end === next.end && prev.query === next.query) return prev;
@@ -181,6 +196,7 @@ export function NotesScreen({
     setSaveError(null);
     setGenerateError(null);
     setCommandState(null);
+    commandDismissedRef.current = null;
     generateAbortRef.current?.abort();
     setIsGenerating(false);
     const nextPos = note.content.length;
@@ -245,12 +261,24 @@ export function NotesScreen({
     setCommandAnchor({ x: nextX, y: nextY });
   }
 
+  function dismissCommandMenu(persist: boolean) {
+    setCommandState((prev) => {
+      if (persist && prev) {
+        commandDismissedRef.current = { ...prev, version: editVersionRef.current };
+      } else if (!persist) {
+        commandDismissedRef.current = null;
+      }
+      return null;
+    });
+  }
+
   function applyCommand(option: CommandOption) {
     if (!selectedNoteId || !commandState) return;
     const currentContent = draftContentRef.current;
     const nextContent =
       currentContent.slice(0, commandState.start) + option.insertText + currentContent.slice(commandState.end);
     applyContentUpdate(selectedNoteId, nextContent);
+    commandDismissedRef.current = null;
     const nextCursor = commandState.start + option.insertText.length;
     setSelection({ start: nextCursor, end: nextCursor });
     selectionRef.current = { start: nextCursor, end: nextCursor };
@@ -602,7 +630,10 @@ export function NotesScreen({
                   }
                   applyContentUpdate(selectedNote.id, content);
                 }}
-                onBlur={() => setCommandState(null)}
+                onBlur={() => dismissCommandMenu(false)}
+                onPressIn={() => {
+                  if (commandState) dismissCommandMenu(true);
+                }}
                 onSelectionChange={(event) => {
                   const nextSelection = event.nativeEvent.selection;
                   setSelection(nextSelection);
@@ -611,7 +642,7 @@ export function NotesScreen({
                 onKeyPress={(event) => {
                   const key = event.nativeEvent.key;
                   if (key === "Escape") {
-                    setCommandState(null);
+                    dismissCommandMenu(true);
                     return;
                   }
                   if (key === "Enter" || key === "Return") {

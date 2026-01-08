@@ -117,4 +117,4 @@ npm run web
 - Mode jour/nuit: bouton `☀︎/☾` sur l’écran de login et dans la sidebar (préférence persistée).
 - Mode mobile: le bandeau gauche est masquable (bouton `☰` pour ouvrir, tap sur le fond ou `×` pour fermer).
 - Éditeur: placeholder "Nouvelle page" en gros, date retirée, statut de sauvegarde en bandeau en haut à droite, barre horizontale supprimée, marge latérale augmentée.
-- Éditeur: taper `/` ouvre un menu de commandes (ex: `/generate`, todo, titre) proche du curseur.
+- Éditeur: taper `/` ouvre un menu de commandes (ex: `/generate`, todo, titre) proche du curseur; `Echap` ou un tap le ferme.

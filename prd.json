@@ -10,7 +10,7 @@
         "Le menu se ferme avec Echap/tap/ecrire autre chose, en dehors et ne bloque jamais la saisie"
       ],
       "priority": 1,
-      "passes": false,
+      "passes": true,
       "notes": "Base pour les actions IA (UX type Notion)."
     },
     {

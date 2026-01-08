@@ -97,3 +97,4 @@ Objectif : faire évoluer l’app **rapidement** sans dette technique, sans cass
 
 - IA: retirer la ligne `/generate` puis insérer la suggestion uniquement si la version du contenu n'a pas changé.
 - Menu slash: mesurer la position du curseur via `Text` (onTextLayout) + offset de scroll pour ancrer le menu.
+- Menu slash: fermer via tap/Echap sans réouverture immédiate tant que le contenu ne change pas.

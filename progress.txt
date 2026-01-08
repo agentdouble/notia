@@ -6,6 +6,7 @@ Started: 2024-01-15
 - Types: Export from actions.ts
 - IA: AbortController + request id + content version guard before insert
 - Slash menu: Text onTextLayout + scroll offset for cursor anchoring
+- Slash menu: Dismiss state guards against immediate reopen on tap/Echap
 
 ## Key Files
 - db/schema.ts
@@ -18,4 +19,10 @@ Started: 2024-01-15
 - **Learnings:**
   - Guard AI insertions with request ids + content version checks to avoid stale writes.
   - Remove the command line before generating to keep content clean.
+---
+## 2026-01-09 - US-003
+- Added slash menu dismissal tracking so tap/Echap closes it without reopening until content changes.
+- Files changed: `mobile/src/screens/NotesScreen.tsx`, `README.md`, `AGENTS.md`, `progress.txt`.
+- **Learnings:**
+  - Track the last dismissed slash command to avoid reopening until content changes.
 ---
