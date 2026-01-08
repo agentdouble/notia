@@ -59,6 +59,31 @@ def _slice_context(content: str, cursor: int) -> tuple[str, str]:
     return prefix, suffix
 
 
+def _guess_openai_max_token_param(model: str) -> str:
+    normalized = model.strip().lower()
+    if normalized.startswith("gpt-5") or normalized.startswith("o"):
+        return "max_completion_tokens"
+    return "max_tokens"
+
+
+def _is_openai_unsupported_param(res: httpx.Response, param: str) -> bool:
+    if res.status_code != 400:
+        return False
+    try:
+        payload = res.json()
+    except ValueError:
+        return False
+    if not isinstance(payload, dict):
+        return False
+    err = payload.get("error")
+    if not isinstance(err, dict):
+        return False
+    if err.get("param") != param:
+        return False
+    msg = err.get("message")
+    return isinstance(msg, str) and "Unsupported parameter" in msg
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     app.state.http = httpx.AsyncClient(timeout=httpx.Timeout(10.0))
@@ -118,23 +143,37 @@ async def generate_completion(content: str, cursor: int, http: httpx.AsyncClient
     )
 
     try:
+        token_param = _guess_openai_max_token_param(model)
+        base_payload = {
+            "model": model,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            "temperature": 0.7,
+        }
+        payload = {**base_payload, token_param: max_tokens}
         res = await http.post(
             "https://api.openai.com/v1/chat/completions",
             headers={
                 "Authorization": f"Bearer {api_key}",
                 "Content-Type": "application/json",
             },
-            json={
-                "model": model,
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
-                "temperature": 0.7,
-                "max_tokens": max_tokens,
-            },
+            json=payload,
             timeout=httpx.Timeout(20.0),
         )
+        if _is_openai_unsupported_param(res, token_param):
+            fallback_param = "max_tokens" if token_param == "max_completion_tokens" else "max_completion_tokens"
+            payload = {**base_payload, fallback_param: max_tokens}
+            res = await http.post(
+                "https://api.openai.com/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                },
+                json=payload,
+                timeout=httpx.Timeout(20.0),
+            )
         res.raise_for_status()
     except httpx.HTTPStatusError as exc:
         raise HTTPException(status_code=502, detail=f"AI request failed: {exc.response.text}") from exc
