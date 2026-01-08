@@ -57,3 +57,11 @@ export async function updateNote(
 export async function deleteNote(token: string, noteId: string): Promise<void> {
   await request(`/notes/${encodeURIComponent(noteId)}`, { token, method: "DELETE" });
 }
+
+export async function generateContinuation(
+  token: string,
+  body: { content: string; cursor: number },
+  signal?: AbortSignal
+): Promise<{ suggestion: string }> {
+  return request<{ suggestion: string }>("/ai/generate", { token, method: "POST", body, signal });
+}

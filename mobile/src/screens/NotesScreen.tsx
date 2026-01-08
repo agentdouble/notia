@@ -41,16 +41,43 @@ export function NotesScreen({
   const [isSaving, setIsSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  const [isGenerating, setIsGenerating] = useState(false);
+  const [generateError, setGenerateError] = useState<string | null>(null);
+  const [selection, setSelection] = useState({ start: 0, end: 0 });
 
   const editVersionRef = useRef(0);
   const saveAbortRef = useRef<AbortController | null>(null);
   const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const generateAbortRef = useRef<AbortController | null>(null);
+  const generateRequestIdRef = useRef(0);
+  const selectionRef = useRef(selection);
+  const draftContentRef = useRef(draftContent);
+  const pendingGenerateRef = useRef<number | null>(null);
 
   const styles = useMemo(() => createStyles(theme), [theme]);
   const titlePlaceholderColor = theme.name === "dark" ? "#9aa0a6" : "#cbd5e1";
   const displayTitle = draftTitle === "Sans titre" || draftTitle === "Nouvelle note" ? "" : draftTitle;
 
   const selectedNote = useMemo(() => notes.find((n) => n.id === selectedNoteId) ?? null, [notes, selectedNoteId]);
+  const statusLabel = generateError
+    ? generateError
+    : saveError
+    ? saveError
+    : isGenerating
+    ? "Génération…"
+    : isSaving
+    ? "Enregistrement…"
+    : isDirty
+    ? "Modifications non enregistrées"
+    : "Synchronisé";
+
+  useEffect(() => {
+    selectionRef.current = selection;
+  }, [selection]);
+
+  useEffect(() => {
+    draftContentRef.current = draftContent;
+  }, [draftContent]);
 
   function selectNote(note: Note) {
     setSelectedNoteId(note.id);
@@ -58,6 +85,11 @@ export function NotesScreen({
     setDraftContent(note.content);
     setIsDirty(false);
     setSaveError(null);
+    setGenerateError(null);
+    generateAbortRef.current?.abort();
+    setIsGenerating(false);
+    const nextPos = note.content.length;
+    setSelection({ start: nextPos, end: nextPos });
   }
 
   function patchNoteLocal(noteId: string, patch: Partial<Note>) {
@@ -66,6 +98,75 @@ export function NotesScreen({
       next.sort((a, b) => (a.updated_at < b.updated_at ? 1 : -1));
       return next;
     });
+  }
+
+  function applyContentUpdate(noteId: string, content: string) {
+    editVersionRef.current += 1;
+    setDraftContent(content);
+    draftContentRef.current = content;
+    setIsDirty(true);
+    setGenerateError(null);
+    patchNoteLocal(noteId, { content, updated_at: nowIso() });
+  }
+
+  function findGenerateCommandRange(content: string, cursor: number) {
+    const safeCursor = Math.max(0, Math.min(cursor, content.length));
+    const lineStart = content.lastIndexOf("\n", safeCursor - 1) + 1;
+    let lineEnd = content.indexOf("\n", safeCursor);
+    if (lineEnd === -1) lineEnd = content.length;
+    const line = content.slice(lineStart, lineEnd);
+    if (line.trim() !== "/generate") return null;
+    return { lineStart, lineEnd };
+  }
+
+  function stripCommandLine(content: string, range: { lineStart: number; lineEnd: number }) {
+    const after =
+      range.lineEnd < content.length && content[range.lineEnd] === "\n" ? range.lineEnd + 1 : range.lineEnd;
+    return content.slice(0, range.lineStart) + content.slice(after);
+  }
+
+  async function runGenerate(insertIndex: number, baseContent: string, baseVersion: number) {
+    if (!selectedNoteId) return;
+
+    generateAbortRef.current?.abort();
+    const controller = new AbortController();
+    generateAbortRef.current = controller;
+    const requestId = generateRequestIdRef.current + 1;
+    generateRequestIdRef.current = requestId;
+    setIsGenerating(true);
+    setGenerateError(null);
+
+    try {
+      const { suggestion } = await api.generateContinuation(
+        token,
+        { content: baseContent, cursor: insertIndex },
+        controller.signal
+      );
+      if (controller.signal.aborted || generateRequestIdRef.current !== requestId) return;
+      if (editVersionRef.current !== baseVersion || draftContentRef.current !== baseContent) {
+        setGenerateError("Le contenu a changé, relance /generate.");
+        return;
+      }
+      const nextContent = baseContent.slice(0, insertIndex) + suggestion + baseContent.slice(insertIndex);
+      applyContentUpdate(selectedNoteId, nextContent);
+      const nextCursor = insertIndex + suggestion.length;
+      setSelection({ start: nextCursor, end: nextCursor });
+      selectionRef.current = { start: nextCursor, end: nextCursor };
+    } catch (e) {
+      if (controller.signal.aborted) return;
+      const message = e instanceof Error ? e.message : "Erreur de génération.";
+      setGenerateError(message);
+    } finally {
+      if (!controller.signal.aborted) setIsGenerating(false);
+    }
+  }
+
+  function queueGenerateFromCommand() {
+    if (!selectedNoteId || isGenerating) return;
+    const cursor = selectionRef.current.start;
+    const commandRange = findGenerateCommandRange(draftContentRef.current, cursor);
+    if (!commandRange) return;
+    pendingGenerateRef.current = cursor;
   }
 
   useEffect(() => {
@@ -99,6 +200,7 @@ export function NotesScreen({
       cancelled = true;
       if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
       saveAbortRef.current?.abort();
+      generateAbortRef.current?.abort();
     };
   }, [token]);
 
@@ -327,6 +429,7 @@ export function NotesScreen({
                   editVersionRef.current += 1;
                   setDraftTitle(title);
                   setIsDirty(true);
+                  setGenerateError(null);
                   patchNoteLocal(selectedNote.id, { title, updated_at: nowIso() });
                 }}
                 placeholder="Nouvelle page"
@@ -336,17 +439,40 @@ export function NotesScreen({
               />
               <View style={styles.saveStatusBanner}>
                 <Text style={styles.saveStatusText} numberOfLines={1}>
-                  {saveError ? saveError : isSaving ? "Enregistrement…" : isDirty ? "Modifications non enregistrées" : "Synchronisé"}
+                  {statusLabel}
                 </Text>
               </View>
             </View>
             <TextInput
               value={draftContent}
               onChangeText={(content) => {
-                editVersionRef.current += 1;
-                setDraftContent(content);
-                setIsDirty(true);
-                patchNoteLocal(selectedNote.id, { content, updated_at: nowIso() });
+                const pendingCursor = pendingGenerateRef.current;
+                if (pendingCursor !== null) {
+                  pendingGenerateRef.current = null;
+                  const commandRange = findGenerateCommandRange(content, pendingCursor);
+                  if (commandRange) {
+                    const nextContent = stripCommandLine(content, commandRange);
+                    applyContentUpdate(selectedNote.id, nextContent);
+                    const insertIndex = commandRange.lineStart;
+                    setSelection({ start: insertIndex, end: insertIndex });
+                    selectionRef.current = { start: insertIndex, end: insertIndex };
+                    const baseVersion = editVersionRef.current;
+                    void runGenerate(insertIndex, nextContent, baseVersion);
+                    return;
+                  }
+                }
+                applyContentUpdate(selectedNote.id, content);
+              }}
+              onSelectionChange={(event) => {
+                const nextSelection = event.nativeEvent.selection;
+                setSelection(nextSelection);
+                selectionRef.current = nextSelection;
+              }}
+              onKeyPress={(event) => {
+                const key = event.nativeEvent.key;
+                if (key === "Enter" || key === "Return") {
+                  queueGenerateFromCommand();
+                }
               }}
               placeholder="Écris ta note…"
               placeholderTextColor={theme.colors.placeholder}
@@ -354,6 +480,7 @@ export function NotesScreen({
               underlineColorAndroid="transparent"
               style={[styles.editorBody, webNoOutline]}
               textAlignVertical="top"
+              selection={selection}
             />
           </View>
         )}

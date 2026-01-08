@@ -1,25 +1,98 @@
-# AGENT.MD - Règles générales pour l'assistant codex
+# AGENTS.MD
 
-Avant d'implémenter quoi que ce soit, fait un plan avant de passer au code. 
+Objectif : faire évoluer l’app **rapidement** sans dette technique, sans casser l’existant, et avec une qualité **production**.
 
-1. **No artifacts** - Éviter la création d'artefacts inutiles.
-2. **Less code is better than more code** 
-3. **No fallback mechanisms** — they hide real failures - Les mécanismes de secours masquent les vraies défaillances.
-4. **Rewrite existing components over adding new ones** - Réécrire les composants existants plutôt que d'en ajouter de nouveaux.
-5. **Flag obsolete files to keep the codebase lightweight** - Signaler les fichiers obsolètes pour maintenir une base de code légère.
-6. **Avoid race conditions at all costs** - Éviter les conditions de concurrence à tout prix.
-7. **Take your time to ultrathink when on extended thinking mode** — thinking is cheaper than fixing bugs - Prendre le temps de bien réfléchir en mode de pensée étendue, la réflexion coûte moins cher que la correction de bugs.
-8. **Coder de façon modulaire pour favoriser la collaboration entre agents** - IMPORTANT : L'ajout de features ne doit pas casser le reste du système.
-9. **Add comments only when necessary** — the code should speak for itself - Ajouter des commentaires uniquement quand nécessaire, le code doit être auto-explicatif.
-10. **Always add meaningful logs** — but only where it brings value - Toujours ajouter des logs significatifs, mais seulement là où cela apporte de la valeur.
-11. **Toujours penser production** le code doit toujours etre prêt pour la production. Pas de code inutiles. 
-12. **Toujours mettre à jour le README.md** : Permet de documenter les changements.  
+---
 
+## Règles d’or (non négociables)
 
+1) **No artifacts**
+- Ne pas créer de fichiers/artefacts inutiles (scripts temporaires, dumps, docs redondantes, etc.).
+- Si un fichier est ajouté, il doit avoir une utilité durable.
 
-Ces règles visent à maintenir une base de code propre, modulaire et maintenable tout en favorisant la collaboration efficace entre différents agents et développeurs.
-Utilise toujours uv pour gestion de package python
+2) **Less code > more code**
+- Préférer une solution simple, lisible, et minimale.
+- Supprimer le code mort plutôt que le contourner.
 
+3) **Rewrite > add**
+- Réécrire/améliorer les composants existants plutôt que d’en créer de nouveaux.
+- Ajouter un nouveau composant uniquement si cela **réduit** la complexité globale.
 
-A chaque fois que tu fais une modif, commit les changements
-A chaque fois que tu fais une modif, teste les changements et assure toi que ça fonctionne 
+4) **Flag obsolete**
+- Si un fichier devient obsolète : le **signaler** et proposer sa suppression.
+- Garder une codebase légère.
+
+5) **Avoid race conditions at all costs**
+- Pas d’effets de bord concurrents, pas de double requêtes silencieuses, pas de state incohérent.
+- Toujours gérer : annulation (abort), idempotence, retries, locks si nécessaire.
+
+6) **Comments only if necessary**
+- Commenter uniquement ce qui n’est pas évident (why > what).
+- Aucun commentaire “bruit”.
+
+7) **Modulaire & collaboratif**
+- Découper en modules clairs (responsabilités nettes).
+- Une feature ne doit **jamais** casser le reste du système.
+- Préférer des interfaces stables, des contrats explicites.
+
+8) **Meaningful logs (value only)**
+- Ajouter des logs seulement s’ils aident à diagnostiquer en prod.
+- Logs structurés quand pertinent (contexte, ids, timing, erreurs).
+- Pas de spam.
+
+9) **Think production-first**
+- Chaque changement doit être “ship-ready”.
+- Gestion d’erreurs propre, timeouts, validations, fallback si nécessaire.
+- Pas de “TODO” oubliés, pas de hacks temporaires.
+
+10) **README.md toujours à jour**
+- Toute modif fonctionnelle/architecture/config doit être reflétée dans le README.
+
+---
+
+## Stack & conventions projet
+
+### Python (Backend)
+- **Toujours utiliser `uv`** pour la gestion des packages et l’exécution.
+- Pas de dépendances inutiles.
+
+---
+
+## Workflow de dev (obligatoire)
+
+1) **Toujours lancer l’app via `start.sh`**
+- `start.sh` démarre backend + frontend.
+- Les ports sont définis dans `.env`
+- CORS : configuration dynamique via ce mécanisme (ne pas hardcoder des ports).
+
+2) **Si besoin de travailler avec DB : utiliser MCP SUPABASE**
+3) **Travail avec un workflow git propre**
+4) **Tests unitaires systématiques avant commit.**
+5) **Tests d'integration avec MCP avec chrome-devtool si c'est un ajout dans une app** 
+- Vérifier que rien n’est cassé (build, run via `start.sh`, chemins critiques).
+6) **Tests E2E si possible: ça valide l’app de A à Z**
+7) **Avant de conclure une PR / livraison**
+- Nettoyer les fichiers inutiles.
+- Mettre à jour le README si nécessaire.
+
+---
+
+## Patterns recommandés
+
+### Prévenir les race conditions (front)
+- AbortController sur fetch
+- Cleanup sur useEffect
+- “Latest request wins” si plusieurs appels possibles
+- Déduplication / caching si utile
+
+### Prévenir les race conditions (back)
+- Endpoints idempotents quand possible
+- Transactions DB si écritures multiples
+- Verrous logiques uniquement si nécessaire
+- Timeouts + retries contrôlés
+
+---
+
+## Learnings
+
+- IA: retirer la ligne `/generate` puis insérer la suggestion uniquement si la version du contenu n'a pas changé.

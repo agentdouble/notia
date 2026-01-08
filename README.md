@@ -84,6 +84,7 @@ Si tu vois `Forbidden use of secret API key in browser`, c’est presque toujour
 cd backend
 cp .env.example .env
 # renseigner SUPABASE_URL + SUPABASE_ANON_KEY + SUPABASE_SERVICE_ROLE_KEY
+# + OPENAI_API_KEY si tu veux activer /generate
 uv sync
 uv run uvicorn app.main:app --reload --port 8000 --env-file .env
 ```
@@ -110,6 +111,7 @@ npm run web
 
 - L’app se connecte à Supabase (email/mot de passe), récupère le `access_token`, puis appelle l’API FastAPI avec `Authorization: Bearer <token>`.
 - Le backend valide le token via `/auth/v1/user` et lit/écrit dans `notes` via PostgREST (service role key).
+- IA `/generate` : le backend appelle OpenAI via `OPENAI_API_KEY` (optionnellement `OPENAI_MODEL`), le client ne voit jamais la clé.
 - `./start.sh` injecte `CORS_ALLOW_ORIGINS` côté backend à partir des ports (`PORT` backend + `EXPO_PACKAGER_PORT` frontend, défaut `8081`).
 - `./start.sh` injecte aussi `EXPO_PUBLIC_SUPABASE_URL` et `EXPO_PUBLIC_SUPABASE_ANON_KEY` au frontend à partir de `backend/.env` (évite la redondance dans `mobile/.env`).
 - Mode jour/nuit: bouton `☀︎/☾` sur l’écran de login et dans la sidebar (préférence persistée).

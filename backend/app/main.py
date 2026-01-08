@@ -21,11 +21,42 @@ class NoteUpdate(BaseModel):
     content: str | None = None
 
 
+class GenerateRequest(BaseModel):
+    content: str
+    cursor: int | None = None
+
+
+class GenerateResponse(BaseModel):
+    suggestion: str
+
+
 def _get_env(name: str) -> str:
     value = os.getenv(name)
     if not value:
         raise RuntimeError(f"Missing environment variable: {name}")
     return value
+
+
+def _get_env_int(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+
+def _slice_context(content: str, cursor: int) -> tuple[str, str]:
+    prefix_limit = _get_env_int("OPENAI_PREFIX_CHARS", 4000)
+    suffix_limit = _get_env_int("OPENAI_SUFFIX_CHARS", 1000)
+    prefix = content[:cursor]
+    suffix = content[cursor:]
+    if len(prefix) > prefix_limit:
+        prefix = prefix[-prefix_limit:]
+    if len(suffix) > suffix_limit:
+        suffix = suffix[:suffix_limit]
+    return prefix, suffix
 
 
 @asynccontextmanager
@@ -63,6 +94,62 @@ app.add_middleware(
 
 def get_supabase(request: Request) -> Supabase:
     return request.app.state.supabase
+
+
+async def generate_completion(content: str, cursor: int, http: httpx.AsyncClient) -> str:
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        raise HTTPException(status_code=503, detail="AI not configured.")
+
+    model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+    max_tokens = _get_env_int("OPENAI_MAX_TOKENS", 180)
+    prefix, suffix = _slice_context(content, cursor)
+
+    system_prompt = (
+        "You are a writing assistant for a personal note-taking app. "
+        "Continue the note in the same language and tone. "
+        "Return only the text to insert at the cursor. "
+        "Do not repeat existing content."
+    )
+    user_prompt = (
+        "Insert text between the prefix and suffix.\n\n"
+        f"Prefix:\n{prefix}\n\n"
+        f"Suffix:\n{suffix}"
+    )
+
+    try:
+        res = await http.post(
+            "https://api.openai.com/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": model,
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                "temperature": 0.7,
+                "max_tokens": max_tokens,
+            },
+            timeout=httpx.Timeout(20.0),
+        )
+        res.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(status_code=502, detail=f"AI request failed: {exc.response.text}") from exc
+    except httpx.RequestError as exc:
+        raise HTTPException(status_code=502, detail="AI request failed.") from exc
+
+    data = res.json()
+    try:
+        content_out = data["choices"][0]["message"]["content"]
+    except (KeyError, IndexError, TypeError) as exc:
+        raise HTTPException(status_code=502, detail="AI response invalid.") from exc
+
+    if not isinstance(content_out, str) or not content_out.strip():
+        raise HTTPException(status_code=502, detail="AI response empty.")
+    return content_out.strip()
 
 
 async def get_user_id(
@@ -136,3 +223,19 @@ async def delete_note(note_id: str, user_id: str = Depends(get_user_id), supabas
     except httpx.RequestError:
         raise HTTPException(status_code=502, detail="Supabase request failed.")
     return {"ok": True}
+
+
+@app.post("/ai/generate", response_model=GenerateResponse)
+async def generate_ai(
+    body: GenerateRequest,
+    request: Request,
+    user_id: str = Depends(get_user_id),
+):
+    _ = user_id
+    content = body.content or ""
+    cursor = len(content) if body.cursor is None else body.cursor
+    if cursor < 0 or cursor > len(content):
+        raise HTTPException(status_code=400, detail="Invalid cursor.")
+
+    suggestion = await generate_completion(content, cursor, request.app.state.http)
+    return GenerateResponse(suggestion=suggestion)

@@ -1,0 +1,29 @@
+{
+  "branchName": "ralph/IA",
+  "userStories": [
+    {
+      "id": "US-003",
+      "title": "Ajouter un menu de commandes '/' dans l'editeur",
+      "acceptanceCriteria": [
+        "Taper '/' dans le corps de la note ouvre un menu de commandes pres du curseur",
+        "Selectionner une commande insere un placeholder/une action a la position courante du curseur",
+        "Le menu se ferme avec Echap/tap en dehors et ne bloque jamais la saisie"
+      ],
+      "priority": 3,
+      "passes": false,
+      "notes": "Base pour les actions IA (UX type Notion)."
+    },
+    {
+      "id": "US-004",
+      "title": "IA : Generer la suite du contenu via '/generate'",
+      "acceptanceCriteria": [
+        "La commande '/generate' propose une continuation du contenu et l'insere a la position du curseur (non destructif)",
+        "Les requetes sont annulables (AbortController) et la derniere requete l'emporte",
+        "Les cles IA ne vont jamais cote client; les appels passent par le backend avec auth utilisateur"
+      ],
+      "priority": 4,
+      "passes": true,
+      "notes": "Doit gerer les timeouts + erreurs proprement (production-ready)."
+    }
+  ]
+}

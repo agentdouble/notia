@@ -1,0 +1,20 @@
+# Ralph Progress Log
+Started: 2024-01-15
+
+## Codebase Patterns
+- Migrations: IF NOT EXISTS
+- Types: Export from actions.ts
+- IA: AbortController + request id + content version guard before insert
+
+## Key Files
+- db/schema.ts
+- app/auth/actions.ts
+---
+
+## 2026-01-08 - US-004
+- Implemented `/generate` command handling with cancellable AI continuation and safe insertion at cursor.
+- Files changed: `mobile/src/screens/NotesScreen.tsx`, `mobile/src/lib/api.ts`, `backend/app/main.py`, `backend/.env.example`, `README.md`, `AGENTS.md`.
+- **Learnings:**
+  - Guard AI insertions with request ids + content version checks to avoid stale writes.
+  - Remove the command line before generating to keep content clean.
+---
