@@ -96,3 +96,4 @@ Objectif : faire évoluer l’app **rapidement** sans dette technique, sans cass
 ## Learnings
 
 - IA: retirer la ligne `/generate` puis insérer la suggestion uniquement si la version du contenu n'a pas changé.
+- Menu slash: mesurer la position du curseur via `Text` (onTextLayout) + offset de scroll pour ancrer le menu.

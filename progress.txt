@@ -5,6 +5,7 @@ Started: 2024-01-15
 - Migrations: IF NOT EXISTS
 - Types: Export from actions.ts
 - IA: AbortController + request id + content version guard before insert
+- Slash menu: Text onTextLayout + scroll offset for cursor anchoring
 
 ## Key Files
 - db/schema.ts

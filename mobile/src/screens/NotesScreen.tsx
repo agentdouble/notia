@@ -1,6 +1,18 @@
 import type { Session } from "@supabase/supabase-js";
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { ActivityIndicator, FlatList, Platform, Pressable, StyleSheet, Text, TextInput, View, useWindowDimensions } from "react-native";
+import {
+  ActivityIndicator,
+  FlatList,
+  NativeSyntheticEvent,
+  Platform,
+  Pressable,
+  StyleSheet,
+  Text,
+  TextInput,
+  TextLayoutEventData,
+  View,
+  useWindowDimensions,
+} from "react-native";
 
 import * as api from "../lib/api";
 import type { Theme } from "../lib/theme";
@@ -11,7 +23,53 @@ function nowIso(): string {
   return new Date().toISOString();
 }
 
+function clamp(value: number, min: number, max: number) {
+  return Math.min(Math.max(value, min), max);
+}
+
 const sidebarWidth = 310;
+const commandMenuWidth = 260;
+const commandMenuRowHeight = 44;
+const commandMenuPadding = 8;
+
+type CommandOption = {
+  id: string;
+  title: string;
+  description: string;
+  command: string;
+  insertText: string;
+};
+
+const COMMANDS: CommandOption[] = [
+  {
+    id: "generate",
+    title: "Générer avec l'IA",
+    description: "Insère /generate pour continuer",
+    command: "generate",
+    insertText: "/generate",
+  },
+  {
+    id: "todo",
+    title: "Todo",
+    description: "Ajouter une tâche",
+    command: "todo",
+    insertText: "- [ ] ",
+  },
+  {
+    id: "bullet",
+    title: "Liste à puces",
+    description: "Démarrer une liste",
+    command: "bullet",
+    insertText: "- ",
+  },
+  {
+    id: "heading",
+    title: "Titre",
+    description: "Titre de section",
+    command: "heading",
+    insertText: "# ",
+  },
+];
 
 const webNoOutline = Platform.OS === "web" ? ({ outlineStyle: "none", outlineWidth: 0, boxShadow: "none" } as any) : undefined;
 const webCursorPointer = Platform.OS === "web" ? ({ cursor: "pointer" } as any) : undefined;
@@ -44,6 +102,9 @@ export function NotesScreen({
   const [isGenerating, setIsGenerating] = useState(false);
   const [generateError, setGenerateError] = useState<string | null>(null);
   const [selection, setSelection] = useState({ start: 0, end: 0 });
+  const [commandState, setCommandState] = useState<{ start: number; end: number; query: string } | null>(null);
+  const [commandAnchor, setCommandAnchor] = useState<{ x: number; y: number } | null>(null);
+  const [editorLayout, setEditorLayout] = useState({ width: 0, height: 0 });
 
   const editVersionRef = useRef(0);
   const saveAbortRef = useRef<AbortController | null>(null);
@@ -53,12 +114,23 @@ export function NotesScreen({
   const selectionRef = useRef(selection);
   const draftContentRef = useRef(draftContent);
   const pendingGenerateRef = useRef<number | null>(null);
+  const commandMeasureRef = useRef<{ x: number; y: number; width: number; height: number } | null>(null);
+  const scrollOffsetRef = useRef(0);
 
   const styles = useMemo(() => createStyles(theme), [theme]);
   const titlePlaceholderColor = theme.name === "dark" ? "#9aa0a6" : "#cbd5e1";
   const displayTitle = draftTitle === "Sans titre" || draftTitle === "Nouvelle note" ? "" : draftTitle;
 
   const selectedNote = useMemo(() => notes.find((n) => n.id === selectedNoteId) ?? null, [notes, selectedNoteId]);
+  const visibleCommands = useMemo(() => {
+    if (!commandState) return [];
+    const query = commandState.query.toLowerCase();
+    if (!query) return COMMANDS;
+    return COMMANDS.filter((command) => {
+      const title = command.title.toLowerCase();
+      return command.command.startsWith(query) || title.includes(query);
+    });
+  }, [commandState]);
   const statusLabel = generateError
     ? generateError
     : saveError
@@ -79,6 +151,28 @@ export function NotesScreen({
     draftContentRef.current = draftContent;
   }, [draftContent]);
 
+  useEffect(() => {
+    if (!selectedNoteId) {
+      setCommandState(null);
+      return;
+    }
+    if (selection.start !== selection.end) {
+      setCommandState(null);
+      return;
+    }
+    const next = findSlashCommand(draftContent, selection.start);
+    setCommandState((prev) => {
+      if (!next) return null;
+      if (prev && prev.start === next.start && prev.end === next.end && prev.query === next.query) return prev;
+      return next;
+    });
+  }, [draftContent, selection, selectedNoteId]);
+
+  useEffect(() => {
+    if (commandState) return;
+    setCommandAnchor(null);
+  }, [commandState]);
+
   function selectNote(note: Note) {
     setSelectedNoteId(note.id);
     setDraftTitle(note.title);
@@ -86,6 +180,7 @@ export function NotesScreen({
     setIsDirty(false);
     setSaveError(null);
     setGenerateError(null);
+    setCommandState(null);
     generateAbortRef.current?.abort();
     setIsGenerating(false);
     const nextPos = note.content.length;
@@ -109,6 +204,21 @@ export function NotesScreen({
     patchNoteLocal(noteId, { content, updated_at: nowIso() });
   }
 
+  function findSlashCommand(content: string, cursor: number) {
+    const safeCursor = Math.max(0, Math.min(cursor, content.length));
+    const lineStart = content.lastIndexOf("\n", safeCursor - 1) + 1;
+    const beforeCursor = content.slice(lineStart, safeCursor);
+    const slashIndex = beforeCursor.lastIndexOf("/");
+    if (slashIndex === -1) return null;
+    if (slashIndex > 0) {
+      const prevChar = beforeCursor[slashIndex - 1];
+      if (prevChar && !/\s/.test(prevChar)) return null;
+    }
+    const query = beforeCursor.slice(slashIndex + 1);
+    if (/\s/.test(query)) return null;
+    return { start: lineStart + slashIndex, end: safeCursor, query };
+  }
+
   function findGenerateCommandRange(content: string, cursor: number) {
     const safeCursor = Math.max(0, Math.min(cursor, content.length));
     const lineStart = content.lastIndexOf("\n", safeCursor - 1) + 1;
@@ -123,6 +233,28 @@ export function NotesScreen({
     const after =
       range.lineEnd < content.length && content[range.lineEnd] === "\n" ? range.lineEnd + 1 : range.lineEnd;
     return content.slice(0, range.lineStart) + content.slice(after);
+  }
+
+  function handleCommandMeasureLayout(event: NativeSyntheticEvent<TextLayoutEventData>) {
+    const lines = event.nativeEvent.lines;
+    if (!lines.length) return;
+    const lastLine = lines[lines.length - 1];
+    commandMeasureRef.current = lastLine;
+    const nextX = lastLine.x + lastLine.width;
+    const nextY = lastLine.y + lastLine.height - scrollOffsetRef.current;
+    setCommandAnchor({ x: nextX, y: nextY });
+  }
+
+  function applyCommand(option: CommandOption) {
+    if (!selectedNoteId || !commandState) return;
+    const currentContent = draftContentRef.current;
+    const nextContent =
+      currentContent.slice(0, commandState.start) + option.insertText + currentContent.slice(commandState.end);
+    applyContentUpdate(selectedNoteId, nextContent);
+    const nextCursor = commandState.start + option.insertText.length;
+    setSelection({ start: nextCursor, end: nextCursor });
+    selectionRef.current = { start: nextCursor, end: nextCursor };
+    setCommandState(null);
   }
 
   async function runGenerate(insertIndex: number, baseContent: string, baseVersion: number) {
@@ -443,45 +575,111 @@ export function NotesScreen({
                 </Text>
               </View>
             </View>
-            <TextInput
-              value={draftContent}
-              onChangeText={(content) => {
-                const pendingCursor = pendingGenerateRef.current;
-                if (pendingCursor !== null) {
-                  pendingGenerateRef.current = null;
-                  const commandRange = findGenerateCommandRange(content, pendingCursor);
-                  if (commandRange) {
-                    const nextContent = stripCommandLine(content, commandRange);
-                    applyContentUpdate(selectedNote.id, nextContent);
-                    const insertIndex = commandRange.lineStart;
-                    setSelection({ start: insertIndex, end: insertIndex });
-                    selectionRef.current = { start: insertIndex, end: insertIndex };
-                    const baseVersion = editVersionRef.current;
-                    void runGenerate(insertIndex, nextContent, baseVersion);
+            <View
+              style={styles.editorBodyWrap}
+              onLayout={(event) => {
+                const { width, height } = event.nativeEvent.layout;
+                setEditorLayout({ width, height });
+              }}
+            >
+              <TextInput
+                value={draftContent}
+                onChangeText={(content) => {
+                  const pendingCursor = pendingGenerateRef.current;
+                  if (pendingCursor !== null) {
+                    pendingGenerateRef.current = null;
+                    const commandRange = findGenerateCommandRange(content, pendingCursor);
+                    if (commandRange) {
+                      const nextContent = stripCommandLine(content, commandRange);
+                      applyContentUpdate(selectedNote.id, nextContent);
+                      const insertIndex = commandRange.lineStart;
+                      setSelection({ start: insertIndex, end: insertIndex });
+                      selectionRef.current = { start: insertIndex, end: insertIndex };
+                      const baseVersion = editVersionRef.current;
+                      void runGenerate(insertIndex, nextContent, baseVersion);
+                      return;
+                    }
+                  }
+                  applyContentUpdate(selectedNote.id, content);
+                }}
+                onBlur={() => setCommandState(null)}
+                onSelectionChange={(event) => {
+                  const nextSelection = event.nativeEvent.selection;
+                  setSelection(nextSelection);
+                  selectionRef.current = nextSelection;
+                }}
+                onKeyPress={(event) => {
+                  const key = event.nativeEvent.key;
+                  if (key === "Escape") {
+                    setCommandState(null);
                     return;
                   }
-                }
-                applyContentUpdate(selectedNote.id, content);
-              }}
-              onSelectionChange={(event) => {
-                const nextSelection = event.nativeEvent.selection;
-                setSelection(nextSelection);
-                selectionRef.current = nextSelection;
-              }}
-              onKeyPress={(event) => {
-                const key = event.nativeEvent.key;
-                if (key === "Enter" || key === "Return") {
-                  queueGenerateFromCommand();
-                }
-              }}
-              placeholder="Écris ta note…"
-              placeholderTextColor={theme.colors.placeholder}
-              multiline
-              underlineColorAndroid="transparent"
-              style={[styles.editorBody, webNoOutline]}
-              textAlignVertical="top"
-              selection={selection}
-            />
+                  if (key === "Enter" || key === "Return") {
+                    queueGenerateFromCommand();
+                  }
+                }}
+                onScroll={(event) => {
+                  const offset = event.nativeEvent.contentOffset.y;
+                  scrollOffsetRef.current = offset;
+                  if (!commandMeasureRef.current) return;
+                  const line = commandMeasureRef.current;
+                  setCommandAnchor({ x: line.x + line.width, y: line.y + line.height - offset });
+                }}
+                placeholder="Écris ta note…"
+                placeholderTextColor={theme.colors.placeholder}
+                multiline
+                underlineColorAndroid="transparent"
+                style={[styles.editorBody, webNoOutline]}
+                textAlignVertical="top"
+                selection={selection}
+              />
+              {commandState && visibleCommands.length > 0 && editorLayout.width > 0 ? (
+                <>
+                  <Text
+                    style={[styles.editorBody, styles.editorBodyMeasure, { width: editorLayout.width }]}
+                    onTextLayout={handleCommandMeasureLayout}
+                  >
+                    {draftContent.slice(0, commandState.end) || " "}
+                  </Text>
+                  {commandAnchor ? (
+                    <View
+                      style={[
+                        styles.commandMenu,
+                        {
+                          width: Math.min(commandMenuWidth, Math.max(0, editorLayout.width - 16)),
+                          left: (() => {
+                            const menuWidth = Math.min(commandMenuWidth, Math.max(0, editorLayout.width - 16));
+                            return clamp(commandAnchor.x + 8, 8, Math.max(8, editorLayout.width - menuWidth - 8));
+                          })(),
+                          top: (() => {
+                            const menuHeight = commandMenuPadding * 2 + commandMenuRowHeight * visibleCommands.length;
+                            if (editorLayout.height === 0) return Math.max(8, commandAnchor.y + 8);
+                            const below = commandAnchor.y + 8;
+                            const above = commandAnchor.y - menuHeight - 8;
+                            const preferred = below + menuHeight > editorLayout.height && above > 8 ? above : below;
+                            return clamp(preferred, 8, Math.max(8, editorLayout.height - menuHeight - 8));
+                          })(),
+                        },
+                      ]}
+                    >
+                      {visibleCommands.map((command) => (
+                        <Pressable
+                          key={command.id}
+                          onPress={() => applyCommand(command)}
+                          style={({ pressed }) => [styles.commandItem, pressed && styles.commandItemPressed]}
+                        >
+                          <View style={styles.commandItemText}>
+                            <Text style={styles.commandItemTitle}>{command.title}</Text>
+                            <Text style={styles.commandItemDescription}>{command.description}</Text>
+                          </View>
+                          <Text style={styles.commandItemShortcut}>/{command.command}</Text>
+                        </Pressable>
+                      ))}
+                    </View>
+                  ) : null}
+                </>
+              ) : null}
+            </View>
           </View>
         )}
       </View>
@@ -573,6 +771,7 @@ function createStyles(theme: Theme) {
       justifyContent: "space-between",
       gap: 12,
     },
+    editorBodyWrap: { flex: 1, position: "relative" },
     editorTitle: {
       color: theme.colors.text,
       fontSize: 38,
@@ -589,6 +788,13 @@ function createStyles(theme: Theme) {
     },
     saveStatusText: { color: theme.colors.textSubtle, fontSize: 12, fontWeight: "600" },
     editorBody: { flex: 1, color: editorBodyColor, fontSize: 16, lineHeight: 22, paddingVertical: 6 },
+    editorBodyMeasure: {
+      position: "absolute",
+      opacity: 0,
+      left: 0,
+      top: 0,
+      pointerEvents: "none",
+    },
 
     emptyState: { flex: 1, alignItems: "center", justifyContent: "center", padding: 24 },
     emptyTitle: { color: theme.colors.text, fontSize: 18, fontWeight: "700" },
@@ -599,6 +805,35 @@ function createStyles(theme: Theme) {
     sidebarLoading: { paddingTop: 18 },
 
     pressed: { opacity: 0.8 },
+
+    commandMenu: {
+      position: "absolute",
+      backgroundColor: theme.colors.panel,
+      borderRadius: 12,
+      borderWidth: 1,
+      borderColor: theme.colors.border,
+      paddingVertical: commandMenuPadding,
+      shadowColor: "#000",
+      shadowOpacity: 0.2,
+      shadowRadius: 10,
+      shadowOffset: { width: 0, height: 6 },
+      elevation: 12,
+      zIndex: 10,
+    },
+    commandItem: {
+      minHeight: commandMenuRowHeight,
+      paddingHorizontal: 12,
+      paddingVertical: 8,
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "space-between",
+      gap: 8,
+    },
+    commandItemPressed: { backgroundColor: theme.colors.buttonMuted, borderRadius: 10 },
+    commandItemText: { flex: 1 },
+    commandItemTitle: { color: theme.colors.text, fontSize: 14, fontWeight: "600" },
+    commandItemDescription: { color: theme.colors.textMuted, fontSize: 12, marginTop: 2 },
+    commandItemShortcut: { color: theme.colors.textSubtle, fontSize: 12, fontWeight: "600" },
 
     sidebarBackdrop: {
       position: "absolute",
