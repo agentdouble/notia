@@ -2,18 +2,6 @@
   "branchName": "ralph/IA",
   "userStories": [
     {
-      "id": "US-003",
-      "title": "Ajouter un menu de commandes '/' dans l'editeur : QUand on fait '/' il affiche un panneau avec des actions préfaites",
-      "acceptanceCriteria": [
-        "Taper '/' dans le corps de la note ouvre un menu de commandes pres du curseur",
-        "Selectionner une commande insere un placeholder/une action a la position courante du curseur",
-        "Le menu se ferme avec Echap/tap/ecrire autre chose, en dehors et ne bloque jamais la saisie"
-      ],
-      "priority": 1,
-      "passes": true,
-      "notes": "Base pour les actions IA (UX type Notion)."
-    },
-    {
       "id": "US-005",
       "title": "Integrer le streaming pour la génération d'ia notamment avec /generate",
       "acceptanceCriteria": [
@@ -26,8 +14,8 @@
         "Les cles IA ne vont jamais cote client ; les appels passent par le backend avec auth utilisateur, y compris en streaming",
         "Timeouts + erreurs reseau sont gerees proprement (message actionnable), sans casser l'edition"
       ],
-      "priority": 2,
-      "passes": false,
+      "priority": 1,
+      "passes": true,
       "notes": "Streaming recommande via SSE/chunked response. Garder une insertion finale atomique (apercu pendant le flux, insertion seulement si la version du contenu n'a pas change). Ne pas spammer les sauvegardes pendant le streaming."
     }
   ]

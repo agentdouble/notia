@@ -101,6 +101,7 @@ export function NotesScreen({
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [isGenerating, setIsGenerating] = useState(false);
   const [generateError, setGenerateError] = useState<string | null>(null);
+  const [generatePreview, setGeneratePreview] = useState("");
   const [selection, setSelection] = useState({ start: 0, end: 0 });
   const [commandState, setCommandState] = useState<{ start: number; end: number; query: string } | null>(null);
   const [commandAnchor, setCommandAnchor] = useState<{ x: number; y: number } | null>(null);
@@ -117,6 +118,7 @@ export function NotesScreen({
   const commandMeasureRef = useRef<{ x: number; y: number; width: number; height: number } | null>(null);
   const commandDismissedRef = useRef<{ start: number; end: number; query: string; version: number } | null>(null);
   const scrollOffsetRef = useRef(0);
+  const webCaretMirrorRef = useRef<HTMLDivElement | null>(null);
 
   const styles = useMemo(() => createStyles(theme), [theme]);
   const titlePlaceholderColor = theme.name === "dark" ? "#9aa0a6" : "#cbd5e1";
@@ -188,6 +190,14 @@ export function NotesScreen({
     setCommandAnchor(null);
   }, [commandState]);
 
+  useEffect(() => {
+    if (Platform.OS !== "web") return;
+    return () => {
+      webCaretMirrorRef.current?.remove();
+      webCaretMirrorRef.current = null;
+    };
+  }, []);
+
   function selectNote(note: Note) {
     setSelectedNoteId(note.id);
     setDraftTitle(note.title);
@@ -195,6 +205,7 @@ export function NotesScreen({
     setIsDirty(false);
     setSaveError(null);
     setGenerateError(null);
+    setGeneratePreview("");
     setCommandState(null);
     commandDismissedRef.current = null;
     generateAbortRef.current?.abort();
@@ -251,8 +262,92 @@ export function NotesScreen({
     return content.slice(0, range.lineStart) + content.slice(after);
   }
 
+  function measureWebCommandAnchor(cursor: number) {
+    if (Platform.OS !== "web") return null;
+    if (typeof document === "undefined" || typeof window === "undefined") return null;
+    const wrap = document.querySelector("[data-testid='notes-editor-body-wrap']");
+    const textarea = document.querySelector("[data-testid='notes-editor-body-input']");
+    if (!(wrap instanceof HTMLElement) || !(textarea instanceof HTMLTextAreaElement)) return null;
+
+    const safeCursor = Math.max(0, Math.min(cursor, textarea.value.length));
+    const mirror = (() => {
+      if (webCaretMirrorRef.current) return webCaretMirrorRef.current;
+      const div = document.createElement("div");
+      div.setAttribute("data-notia-caret-mirror", "true");
+      const style = div.style;
+      style.position = "absolute";
+      style.visibility = "hidden";
+      style.top = "0";
+      style.left = "-9999px";
+      style.whiteSpace = "pre-wrap";
+      style.wordWrap = "break-word";
+      style.pointerEvents = "none";
+      document.body.appendChild(div);
+      webCaretMirrorRef.current = div;
+      return div;
+    })();
+
+    const computed = window.getComputedStyle(textarea);
+    const properties = [
+      "direction",
+      "box-sizing",
+      "width",
+      "height",
+      "overflow-x",
+      "overflow-y",
+      "border-top-width",
+      "border-right-width",
+      "border-bottom-width",
+      "border-left-width",
+      "padding-top",
+      "padding-right",
+      "padding-bottom",
+      "padding-left",
+      "font-style",
+      "font-variant",
+      "font-weight",
+      "font-stretch",
+      "font-size",
+      "font-family",
+      "line-height",
+      "text-align",
+      "text-transform",
+      "text-indent",
+      "text-decoration",
+      "letter-spacing",
+      "word-spacing",
+      "tab-size",
+      "-moz-tab-size",
+    ];
+
+    mirror.textContent = "";
+    for (const prop of properties) {
+      mirror.style.setProperty(prop, computed.getPropertyValue(prop));
+    }
+    mirror.style.whiteSpace = "pre-wrap";
+    mirror.style.wordWrap = "break-word";
+    mirror.style.overflow = "auto";
+
+    mirror.textContent = textarea.value.slice(0, safeCursor);
+    const marker = document.createElement("span");
+    marker.textContent = textarea.value.slice(safeCursor) || ".";
+    mirror.appendChild(marker);
+
+    mirror.scrollTop = textarea.scrollTop;
+    mirror.scrollLeft = textarea.scrollLeft;
+
+    const markerRect = marker.getBoundingClientRect();
+    const mirrorRect = mirror.getBoundingClientRect();
+    const wrapRect = wrap.getBoundingClientRect();
+    const textareaRect = textarea.getBoundingClientRect();
+
+    const x = textareaRect.left - wrapRect.left + (markerRect.left - mirrorRect.left);
+    const y = textareaRect.top - wrapRect.top + (markerRect.top - mirrorRect.top) + markerRect.height;
+    return { x, y };
+  }
+
   function handleCommandMeasureLayout(event: NativeSyntheticEvent<TextLayoutEventData>) {
-    const lines = event.nativeEvent.lines;
+    const lines = event.nativeEvent.lines ?? [];
     if (!lines.length) return;
     const lastLine = lines[lines.length - 1];
     commandMeasureRef.current = lastLine;
@@ -260,6 +355,12 @@ export function NotesScreen({
     const nextY = lastLine.y + lastLine.height - scrollOffsetRef.current;
     setCommandAnchor({ x: nextX, y: nextY });
   }
+
+  useEffect(() => {
+    if (!commandState) return;
+    const anchor = measureWebCommandAnchor(commandState.end);
+    if (anchor) setCommandAnchor(anchor);
+  }, [commandState, draftContent, selection.start, selection.end, editorLayout.width, editorLayout.height]);
 
   function dismissCommandMenu(persist: boolean) {
     setCommandState((prev) => {
@@ -285,6 +386,30 @@ export function NotesScreen({
     setCommandState(null);
   }
 
+  function formatGenerateError(error: unknown) {
+    if (!(error instanceof Error)) return "Erreur de génération.";
+    const message = error.message.trim();
+    const normalized = message.toLowerCase();
+    if (normalized.includes("ai not configured")) {
+      return "IA non configurée. Ajoute OPENAI_API_KEY côté backend.";
+    }
+    if (normalized.includes("timeout") || normalized.includes("timed out") || normalized.includes("expir")) {
+      return "La génération a expiré. Réessaie /generate.";
+    }
+    if (normalized.includes("network") || normalized.includes("fetch")) {
+      return "Problème réseau. Réessaie /generate.";
+    }
+    return message || "Erreur de génération.";
+  }
+
+  function cancelGenerate(message?: string) {
+    generateAbortRef.current?.abort();
+    generateAbortRef.current = null;
+    if (message) setGenerateError(message);
+    setGeneratePreview("");
+    setIsGenerating(false);
+  }
+
   async function runGenerate(insertIndex: number, baseContent: string, baseVersion: number) {
     if (!selectedNoteId) return;
 
@@ -295,16 +420,34 @@ export function NotesScreen({
     generateRequestIdRef.current = requestId;
     setIsGenerating(true);
     setGenerateError(null);
+    setGeneratePreview("");
 
+    let suggestion = "";
     try {
-      const { suggestion } = await api.generateContinuation(
-        token,
-        { content: baseContent, cursor: insertIndex },
-        controller.signal
-      );
+      await api.generateContinuationStream(token, { content: baseContent, cursor: insertIndex }, {
+        signal: controller.signal,
+        onChunk: (chunk) => {
+          if (controller.signal.aborted || generateRequestIdRef.current !== requestId) return;
+          if (editVersionRef.current !== baseVersion || draftContentRef.current !== baseContent) {
+            if (generateRequestIdRef.current === requestId) {
+              setGenerateError("Le contenu a changé, relance /generate.");
+              setGeneratePreview("");
+              setIsGenerating(false);
+            }
+            controller.abort();
+            return;
+          }
+          suggestion += chunk;
+          setGeneratePreview(suggestion);
+        },
+      });
       if (controller.signal.aborted || generateRequestIdRef.current !== requestId) return;
       if (editVersionRef.current !== baseVersion || draftContentRef.current !== baseContent) {
         setGenerateError("Le contenu a changé, relance /generate.");
+        return;
+      }
+      if (!suggestion.trim()) {
+        setGenerateError("La génération n'a rien retourné.");
         return;
       }
       const nextContent = baseContent.slice(0, insertIndex) + suggestion + baseContent.slice(insertIndex);
@@ -314,15 +457,17 @@ export function NotesScreen({
       selectionRef.current = { start: nextCursor, end: nextCursor };
     } catch (e) {
       if (controller.signal.aborted) return;
-      const message = e instanceof Error ? e.message : "Erreur de génération.";
-      setGenerateError(message);
+      setGenerateError(formatGenerateError(e));
     } finally {
-      if (!controller.signal.aborted) setIsGenerating(false);
+      if (generateRequestIdRef.current === requestId) {
+        if (!controller.signal.aborted) setIsGenerating(false);
+        setGeneratePreview("");
+      }
     }
   }
 
   function queueGenerateFromCommand() {
-    if (!selectedNoteId || isGenerating) return;
+    if (!selectedNoteId) return;
     const cursor = selectionRef.current.start;
     const commandRange = findGenerateCommandRange(draftContentRef.current, cursor);
     if (!commandRange) return;
@@ -603,8 +748,17 @@ export function NotesScreen({
                 </Text>
               </View>
             </View>
+            {isGenerating || generatePreview ? (
+              <View style={styles.generatePreview}>
+                <Text style={styles.generatePreviewLabel}>Aperçu IA</Text>
+                <Text style={styles.generatePreviewText}>
+                  {generatePreview || "Préparation de la réponse…"}
+                </Text>
+              </View>
+            ) : null}
             <View
               style={styles.editorBodyWrap}
+              testID="notes-editor-body-wrap"
               onLayout={(event) => {
                 const { width, height } = event.nativeEvent.layout;
                 setEditorLayout({ width, height });
@@ -613,6 +767,9 @@ export function NotesScreen({
               <TextInput
                 value={draftContent}
                 onChangeText={(content) => {
+                  if (isGenerating) {
+                    cancelGenerate("Le contenu a changé, relance /generate.");
+                  }
                   const pendingCursor = pendingGenerateRef.current;
                   if (pendingCursor !== null) {
                     pendingGenerateRef.current = null;
@@ -652,6 +809,12 @@ export function NotesScreen({
                 onScroll={(event) => {
                   const offset = event.nativeEvent.contentOffset.y;
                   scrollOffsetRef.current = offset;
+                  if (Platform.OS === "web") {
+                    if (!commandState) return;
+                    const anchor = measureWebCommandAnchor(selectionRef.current.start);
+                    if (anchor) setCommandAnchor(anchor);
+                    return;
+                  }
                   if (!commandMeasureRef.current) return;
                   const line = commandMeasureRef.current;
                   setCommandAnchor({ x: line.x + line.width, y: line.y + line.height - offset });
@@ -660,6 +823,7 @@ export function NotesScreen({
                 placeholderTextColor={theme.colors.placeholder}
                 multiline
                 underlineColorAndroid="transparent"
+                testID="notes-editor-body-input"
                 style={[styles.editorBody, webNoOutline]}
                 textAlignVertical="top"
                 selection={selection}
@@ -818,6 +982,23 @@ function createStyles(theme: Theme) {
       paddingVertical: 6,
     },
     saveStatusText: { color: theme.colors.textSubtle, fontSize: 12, fontWeight: "600" },
+    generatePreview: {
+      marginTop: 12,
+      paddingHorizontal: 14,
+      paddingVertical: 12,
+      borderRadius: 12,
+      borderWidth: 1,
+      borderColor: theme.colors.borderSubtle,
+      backgroundColor: theme.colors.panelMuted,
+    },
+    generatePreviewLabel: {
+      color: theme.colors.textMuted,
+      fontSize: 11,
+      textTransform: "uppercase",
+      letterSpacing: 0.6,
+      marginBottom: 6,
+    },
+    generatePreviewText: { color: editorBodyColor, fontSize: 14, lineHeight: 20 },
     editorBody: { flex: 1, color: editorBodyColor, fontSize: 16, lineHeight: 22, paddingVertical: 6 },
     editorBodyMeasure: {
       position: "absolute",

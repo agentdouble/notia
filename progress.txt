@@ -5,6 +5,7 @@ Started: 2024-01-15
 - Migrations: IF NOT EXISTS
 - Types: Export from actions.ts
 - IA: AbortController + request id + content version guard before insert
+- IA streaming: SSE delta -> aperçu UI sans toucher au contenu, insertion finale seulement si contenu stable
 - Slash menu: Text onTextLayout + scroll offset for cursor anchoring
 - Slash menu: Dismiss state guards against immediate reopen on tap/Echap
 
@@ -25,4 +26,11 @@ Started: 2024-01-15
 - Files changed: `mobile/src/screens/NotesScreen.tsx`, `README.md`, `AGENTS.md`, `progress.txt`.
 - **Learnings:**
   - Track the last dismissed slash command to avoid reopening until content changes.
+---
+## 2026-01-09 - US-005
+- Implémenté `/generate` en streaming SSE avec aperçu progressif et insertion finale protégée par version.
+- Files changed: `backend/app/main.py`, `mobile/src/lib/api.ts`, `mobile/src/screens/NotesScreen.tsx`, `README.md`, `AGENTS.md`, `prd.json`, `progress.txt`.
+- **Learnings:**
+  - Séparer l'aperçu IA du contenu pour éviter les sauvegardes pendant le streaming.
+  - Émettre des events SSE `delta/error/done` pour piloter le flux côté client.
 ---

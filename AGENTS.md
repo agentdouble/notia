@@ -68,9 +68,9 @@ Objectif : faire évoluer l’app **rapidement** sans dette technique, sans cass
 2) **Si besoin de travailler avec DB : utiliser MCP SUPABASE**
 3) **Travail avec un workflow git propre**
 4) **Tests unitaires systématiques avant commit.**
-5) **Tests d'integration avec MCP avec chrome-devtool si c'est un ajout dans une app** 
-- Vérifier que rien n’est cassé (build, run via `start.sh`, chemins critiques).
-6) **Tests E2E si possible: ça valide l’app de A à Z**
+5) **Toujours tester avec MCP chrome-devtool l'implémentation** 
+- Use MCP et test la feature end to end. 
+
 7) **Avant de conclure une PR / livraison**
 - Nettoyer les fichiers inutiles.
 - Mettre à jour le README si nécessaire.
@@ -98,3 +98,4 @@ Objectif : faire évoluer l’app **rapidement** sans dette technique, sans cass
 - IA: retirer la ligne `/generate` puis insérer la suggestion uniquement si la version du contenu n'a pas changé.
 - Menu slash: mesurer la position du curseur via `Text` (onTextLayout) + offset de scroll pour ancrer le menu.
 - Menu slash: fermer via tap/Echap sans réouverture immédiate tant que le contenu ne change pas.
+- IA streaming: diffuser en SSE + aperçu en UI sans modifier le contenu, annuler dès que le contenu change.
