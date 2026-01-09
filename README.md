@@ -111,7 +111,7 @@ npm run web
 
 - L’app se connecte à Supabase (email/mot de passe), récupère le `access_token`, puis appelle l’API FastAPI avec `Authorization: Bearer <token>`.
 - Le backend valide le token via `/auth/v1/user` et lit/écrit dans `notes` via PostgREST (service role key).
-- IA `/generate` : streaming SSE via `/ai/generate/stream` (aperçu progressif), insertion finale seulement si le contenu n'a pas changé ; le backend appelle OpenAI via `OPENAI_API_KEY` (optionnellement `OPENAI_MODEL`), le client ne voit jamais la clé.
+- IA `/generate` : streaming SSE via `/ai/generate/stream`, insertion directement dans l’éditeur au curseur (sans cadre d’aperçu) ; si l’utilisateur modifie le contenu pendant la génération, elle est annulée. Le backend appelle OpenAI via `OPENAI_API_KEY` (optionnellement `OPENAI_MODEL`), le client ne voit jamais la clé.
 - Pour tester rapidement: crée un compte via “Créer un compte” (aucun identifiant n’est versionné dans ce repo).
 - `./start.sh` injecte `CORS_ALLOW_ORIGINS` côté backend à partir des ports (`PORT` backend + `EXPO_PACKAGER_PORT` frontend, défaut `8081`).
 - `./start.sh` injecte aussi `EXPO_PUBLIC_SUPABASE_URL` et `EXPO_PUBLIC_SUPABASE_ANON_KEY` au frontend à partir de `backend/.env` (évite la redondance dans `mobile/.env`).

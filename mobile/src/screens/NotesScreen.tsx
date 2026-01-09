@@ -73,6 +73,7 @@ const COMMANDS: CommandOption[] = [
 
 const webNoOutline = Platform.OS === "web" ? ({ outlineStyle: "none", outlineWidth: 0, boxShadow: "none" } as any) : undefined;
 const webCursorPointer = Platform.OS === "web" ? ({ cursor: "pointer" } as any) : undefined;
+const webCaretHidden = Platform.OS === "web" ? ({ caretColor: "transparent" } as any) : undefined;
 
 export function NotesScreen({
   session,
@@ -100,11 +101,12 @@ export function NotesScreen({
   const [saveError, setSaveError] = useState<string | null>(null);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [isGenerating, setIsGenerating] = useState(false);
+  const [isGenerateWaiting, setIsGenerateWaiting] = useState(false);
   const [generateError, setGenerateError] = useState<string | null>(null);
-  const [generatePreview, setGeneratePreview] = useState("");
   const [selection, setSelection] = useState({ start: 0, end: 0 });
   const [commandState, setCommandState] = useState<{ start: number; end: number; query: string } | null>(null);
   const [commandAnchor, setCommandAnchor] = useState<{ x: number; y: number } | null>(null);
+  const [generateAnchor, setGenerateAnchor] = useState<{ x: number; y: number } | null>(null);
   const [editorLayout, setEditorLayout] = useState({ width: 0, height: 0 });
 
   const editVersionRef = useRef(0);
@@ -116,6 +118,8 @@ export function NotesScreen({
   const draftContentRef = useRef(draftContent);
   const pendingGenerateRef = useRef<number | null>(null);
   const commandMeasureRef = useRef<{ x: number; y: number; width: number; height: number } | null>(null);
+  const generateMeasureRef = useRef<{ x: number; y: number; width: number; height: number } | null>(null);
+  const generateInsertIndexRef = useRef<number | null>(null);
   const commandDismissedRef = useRef<{ start: number; end: number; query: string; version: number } | null>(null);
   const scrollOffsetRef = useRef(0);
   const webCaretMirrorRef = useRef<HTMLDivElement | null>(null);
@@ -151,6 +155,13 @@ export function NotesScreen({
   }, [selection]);
 
   useEffect(() => {
+    if (isGenerateWaiting) return;
+    setGenerateAnchor(null);
+    generateMeasureRef.current = null;
+    generateInsertIndexRef.current = null;
+  }, [isGenerateWaiting]);
+
+  useEffect(() => {
     draftContentRef.current = draftContent;
   }, [draftContent]);
 
@@ -158,6 +169,10 @@ export function NotesScreen({
     if (!selectedNoteId) {
       setCommandState(null);
       commandDismissedRef.current = null;
+      return;
+    }
+    if (isGenerating) {
+      setCommandState(null);
       return;
     }
     if (selection.start !== selection.end) {
@@ -183,7 +198,7 @@ export function NotesScreen({
       if (prev && prev.start === next.start && prev.end === next.end && prev.query === next.query) return prev;
       return next;
     });
-  }, [draftContent, selection, selectedNoteId]);
+  }, [draftContent, selection, selectedNoteId, isGenerating]);
 
   useEffect(() => {
     if (commandState) return;
@@ -205,11 +220,14 @@ export function NotesScreen({
     setIsDirty(false);
     setSaveError(null);
     setGenerateError(null);
-    setGeneratePreview("");
     setCommandState(null);
     commandDismissedRef.current = null;
     generateAbortRef.current?.abort();
     setIsGenerating(false);
+    setIsGenerateWaiting(false);
+    setGenerateAnchor(null);
+    generateMeasureRef.current = null;
+    generateInsertIndexRef.current = null;
     const nextPos = note.content.length;
     setSelection({ start: nextPos, end: nextPos });
   }
@@ -356,11 +374,29 @@ export function NotesScreen({
     setCommandAnchor({ x: nextX, y: nextY });
   }
 
+  function handleGenerateMeasureLayout(event: NativeSyntheticEvent<TextLayoutEventData>) {
+    const lines = event.nativeEvent.lines ?? [];
+    if (!lines.length) return;
+    const lastLine = lines[lines.length - 1];
+    generateMeasureRef.current = lastLine;
+    const nextX = lastLine.x + lastLine.width;
+    const nextY = lastLine.y + lastLine.height - scrollOffsetRef.current;
+    setGenerateAnchor({ x: nextX, y: nextY });
+  }
+
   useEffect(() => {
     if (!commandState) return;
     const anchor = measureWebCommandAnchor(commandState.end);
     if (anchor) setCommandAnchor(anchor);
   }, [commandState, draftContent, selection.start, selection.end, editorLayout.width, editorLayout.height]);
+
+  useEffect(() => {
+    if (!isGenerateWaiting) return;
+    if (Platform.OS !== "web") return;
+    const cursor = generateInsertIndexRef.current ?? selection.start;
+    const anchor = measureWebCommandAnchor(cursor);
+    if (anchor) setGenerateAnchor(anchor);
+  }, [isGenerateWaiting, draftContent, selection.start, selection.end, editorLayout.width, editorLayout.height]);
 
   function dismissCommandMenu(persist: boolean) {
     setCommandState((prev) => {
@@ -406,11 +442,14 @@ export function NotesScreen({
     generateAbortRef.current?.abort();
     generateAbortRef.current = null;
     if (message) setGenerateError(message);
-    setGeneratePreview("");
     setIsGenerating(false);
+    setIsGenerateWaiting(false);
+    setGenerateAnchor(null);
+    generateMeasureRef.current = null;
+    generateInsertIndexRef.current = null;
   }
 
-  async function runGenerate(insertIndex: number, baseContent: string, baseVersion: number) {
+  async function runGenerate(insertIndex: number, baseContent: string) {
     if (!selectedNoteId) return;
 
     generateAbortRef.current?.abort();
@@ -419,49 +458,54 @@ export function NotesScreen({
     const requestId = generateRequestIdRef.current + 1;
     generateRequestIdRef.current = requestId;
     setIsGenerating(true);
+    generateInsertIndexRef.current = insertIndex;
+    generateMeasureRef.current = null;
+    setGenerateAnchor(null);
+    setIsGenerateWaiting(true);
     setGenerateError(null);
-    setGeneratePreview("");
 
+    const baseBefore = baseContent.slice(0, insertIndex);
+    const baseAfter = baseContent.slice(insertIndex);
     let suggestion = "";
+    let cursorAtEnd = insertIndex;
+    let sawChunk = false;
     try {
       await api.generateContinuationStream(token, { content: baseContent, cursor: insertIndex }, {
         signal: controller.signal,
         onChunk: (chunk) => {
           if (controller.signal.aborted || generateRequestIdRef.current !== requestId) return;
-          if (editVersionRef.current !== baseVersion || draftContentRef.current !== baseContent) {
-            if (generateRequestIdRef.current === requestId) {
-              setGenerateError("Le contenu a changé, relance /generate.");
-              setGeneratePreview("");
-              setIsGenerating(false);
-            }
-            controller.abort();
-            return;
+          if (!sawChunk) {
+            sawChunk = true;
+            setIsGenerateWaiting(false);
           }
+          const previousCursor = cursorAtEnd;
           suggestion += chunk;
-          setGeneratePreview(suggestion);
+          cursorAtEnd = insertIndex + suggestion.length;
+          const nextContent = baseBefore + suggestion + baseAfter;
+          applyContentUpdate(selectedNoteId, nextContent);
+
+          const currentSelection = selectionRef.current;
+          if (currentSelection.start === currentSelection.end && currentSelection.start === previousCursor) {
+            setSelection({ start: cursorAtEnd, end: cursorAtEnd });
+            selectionRef.current = { start: cursorAtEnd, end: cursorAtEnd };
+          }
         },
       });
       if (controller.signal.aborted || generateRequestIdRef.current !== requestId) return;
-      if (editVersionRef.current !== baseVersion || draftContentRef.current !== baseContent) {
-        setGenerateError("Le contenu a changé, relance /generate.");
-        return;
-      }
       if (!suggestion.trim()) {
         setGenerateError("La génération n'a rien retourné.");
         return;
       }
-      const nextContent = baseContent.slice(0, insertIndex) + suggestion + baseContent.slice(insertIndex);
-      applyContentUpdate(selectedNoteId, nextContent);
-      const nextCursor = insertIndex + suggestion.length;
-      setSelection({ start: nextCursor, end: nextCursor });
-      selectionRef.current = { start: nextCursor, end: nextCursor };
     } catch (e) {
       if (controller.signal.aborted) return;
       setGenerateError(formatGenerateError(e));
     } finally {
       if (generateRequestIdRef.current === requestId) {
-        if (!controller.signal.aborted) setIsGenerating(false);
-        setGeneratePreview("");
+        setIsGenerating(false);
+        setIsGenerateWaiting(false);
+        setGenerateAnchor(null);
+        generateMeasureRef.current = null;
+        generateInsertIndexRef.current = null;
       }
     }
   }
@@ -748,14 +792,6 @@ export function NotesScreen({
                 </Text>
               </View>
             </View>
-            {isGenerating || generatePreview ? (
-              <View style={styles.generatePreview}>
-                <Text style={styles.generatePreviewLabel}>Aperçu IA</Text>
-                <Text style={styles.generatePreviewText}>
-                  {generatePreview || "Préparation de la réponse…"}
-                </Text>
-              </View>
-            ) : null}
             <View
               style={styles.editorBodyWrap}
               testID="notes-editor-body-wrap"
@@ -780,8 +816,7 @@ export function NotesScreen({
                       const insertIndex = commandRange.lineStart;
                       setSelection({ start: insertIndex, end: insertIndex });
                       selectionRef.current = { start: insertIndex, end: insertIndex };
-                      const baseVersion = editVersionRef.current;
-                      void runGenerate(insertIndex, nextContent, baseVersion);
+                      void runGenerate(insertIndex, nextContent);
                       return;
                     }
                   }
@@ -810,10 +845,19 @@ export function NotesScreen({
                   const offset = event.nativeEvent.contentOffset.y;
                   scrollOffsetRef.current = offset;
                   if (Platform.OS === "web") {
+                    if (isGenerateWaiting) {
+                      const cursor = generateInsertIndexRef.current ?? selectionRef.current.start;
+                      const anchor = measureWebCommandAnchor(cursor);
+                      if (anchor) setGenerateAnchor(anchor);
+                    }
                     if (!commandState) return;
                     const anchor = measureWebCommandAnchor(selectionRef.current.start);
                     if (anchor) setCommandAnchor(anchor);
                     return;
+                  }
+                  if (isGenerateWaiting && generateMeasureRef.current) {
+                    const line = generateMeasureRef.current;
+                    setGenerateAnchor({ x: line.x + line.width, y: line.y + line.height - offset });
                   }
                   if (!commandMeasureRef.current) return;
                   const line = commandMeasureRef.current;
@@ -824,10 +868,30 @@ export function NotesScreen({
                 multiline
                 underlineColorAndroid="transparent"
                 testID="notes-editor-body-input"
-                style={[styles.editorBody, webNoOutline]}
+                style={[styles.editorBody, webNoOutline, isGenerateWaiting ? webCaretHidden : undefined]}
                 textAlignVertical="top"
                 selection={selection}
+                caretHidden={isGenerateWaiting}
               />
+              {isGenerateWaiting && Platform.OS !== "web" && editorLayout.width > 0 ? (
+                <Text style={[styles.editorBody, styles.editorBodyMeasure, { width: editorLayout.width }]} onTextLayout={handleGenerateMeasureLayout}>
+                  {draftContent.slice(0, generateInsertIndexRef.current ?? selection.start) || " "}
+                </Text>
+              ) : null}
+              {isGenerateWaiting && generateAnchor && editorLayout.width > 0 && editorLayout.height > 0 ? (
+                <View
+                  pointerEvents="none"
+                  style={[
+                    styles.generateSpinner,
+                    {
+                      left: clamp(generateAnchor.x - 2, 0, Math.max(0, editorLayout.width - 16)),
+                      top: clamp(generateAnchor.y - 19, 0, Math.max(0, editorLayout.height - 16)),
+                    },
+                  ]}
+                >
+                  <ActivityIndicator size="small" color={theme.colors.textSubtle} />
+                </View>
+              ) : null}
               {commandState && visibleCommands.length > 0 && editorLayout.width > 0 ? (
                 <>
                   <Text
@@ -982,23 +1046,7 @@ function createStyles(theme: Theme) {
       paddingVertical: 6,
     },
     saveStatusText: { color: theme.colors.textSubtle, fontSize: 12, fontWeight: "600" },
-    generatePreview: {
-      marginTop: 12,
-      paddingHorizontal: 14,
-      paddingVertical: 12,
-      borderRadius: 12,
-      borderWidth: 1,
-      borderColor: theme.colors.borderSubtle,
-      backgroundColor: theme.colors.panelMuted,
-    },
-    generatePreviewLabel: {
-      color: theme.colors.textMuted,
-      fontSize: 11,
-      textTransform: "uppercase",
-      letterSpacing: 0.6,
-      marginBottom: 6,
-    },
-    generatePreviewText: { color: editorBodyColor, fontSize: 14, lineHeight: 20 },
+    generateSpinner: { position: "absolute", width: 16, height: 16, zIndex: 11, alignItems: "center", justifyContent: "center" },
     editorBody: { flex: 1, color: editorBodyColor, fontSize: 16, lineHeight: 22, paddingVertical: 6 },
     editorBodyMeasure: {
       position: "absolute",
