@@ -1,6 +1,18 @@
 import type { Session } from "@supabase/supabase-js";
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { ActivityIndicator, FlatList, Platform, Pressable, StyleSheet, Text, TextInput, View, useWindowDimensions } from "react-native";
+import {
+  ActivityIndicator,
+  FlatList,
+  NativeSyntheticEvent,
+  Platform,
+  Pressable,
+  StyleSheet,
+  Text,
+  TextInput,
+  TextLayoutEventData,
+  View,
+  useWindowDimensions,
+} from "react-native";
 
 import * as api from "../lib/api";
 import type { Theme } from "../lib/theme";
@@ -11,10 +23,57 @@ function nowIso(): string {
   return new Date().toISOString();
 }
 
+function clamp(value: number, min: number, max: number) {
+  return Math.min(Math.max(value, min), max);
+}
+
 const sidebarWidth = 310;
+const commandMenuWidth = 260;
+const commandMenuRowHeight = 44;
+const commandMenuPadding = 8;
+
+type CommandOption = {
+  id: string;
+  title: string;
+  description: string;
+  command: string;
+  insertText: string;
+};
+
+const COMMANDS: CommandOption[] = [
+  {
+    id: "generate",
+    title: "Générer avec l'IA",
+    description: "Insère /generate pour continuer",
+    command: "generate",
+    insertText: "/generate",
+  },
+  {
+    id: "todo",
+    title: "Todo",
+    description: "Ajouter une tâche",
+    command: "todo",
+    insertText: "- [ ] ",
+  },
+  {
+    id: "bullet",
+    title: "Liste à puces",
+    description: "Démarrer une liste",
+    command: "bullet",
+    insertText: "- ",
+  },
+  {
+    id: "heading",
+    title: "Titre",
+    description: "Titre de section",
+    command: "heading",
+    insertText: "# ",
+  },
+];
 
 const webNoOutline = Platform.OS === "web" ? ({ outlineStyle: "none", outlineWidth: 0, boxShadow: "none" } as any) : undefined;
 const webCursorPointer = Platform.OS === "web" ? ({ cursor: "pointer" } as any) : undefined;
+const webCaretHidden = Platform.OS === "web" ? ({ caretColor: "transparent" } as any) : undefined;
 
 export function NotesScreen({
   session,
@@ -41,16 +100,118 @@ export function NotesScreen({
   const [isSaving, setIsSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  const [isGenerating, setIsGenerating] = useState(false);
+  const [isGenerateWaiting, setIsGenerateWaiting] = useState(false);
+  const [generateError, setGenerateError] = useState<string | null>(null);
+  const [selection, setSelection] = useState({ start: 0, end: 0 });
+  const [commandState, setCommandState] = useState<{ start: number; end: number; query: string } | null>(null);
+  const [commandAnchor, setCommandAnchor] = useState<{ x: number; y: number } | null>(null);
+  const [generateAnchor, setGenerateAnchor] = useState<{ x: number; y: number } | null>(null);
+  const [editorLayout, setEditorLayout] = useState({ width: 0, height: 0 });
 
   const editVersionRef = useRef(0);
   const saveAbortRef = useRef<AbortController | null>(null);
   const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const generateAbortRef = useRef<AbortController | null>(null);
+  const generateRequestIdRef = useRef(0);
+  const selectionRef = useRef(selection);
+  const draftContentRef = useRef(draftContent);
+  const pendingGenerateRef = useRef<number | null>(null);
+  const commandMeasureRef = useRef<{ x: number; y: number; width: number; height: number } | null>(null);
+  const generateMeasureRef = useRef<{ x: number; y: number; width: number; height: number } | null>(null);
+  const generateInsertIndexRef = useRef<number | null>(null);
+  const commandDismissedRef = useRef<{ start: number; end: number; query: string; version: number } | null>(null);
+  const scrollOffsetRef = useRef(0);
+  const webCaretMirrorRef = useRef<HTMLDivElement | null>(null);
 
   const styles = useMemo(() => createStyles(theme), [theme]);
   const titlePlaceholderColor = theme.name === "dark" ? "#9aa0a6" : "#cbd5e1";
   const displayTitle = draftTitle === "Sans titre" || draftTitle === "Nouvelle note" ? "" : draftTitle;
 
   const selectedNote = useMemo(() => notes.find((n) => n.id === selectedNoteId) ?? null, [notes, selectedNoteId]);
+  const visibleCommands = useMemo(() => {
+    if (!commandState) return [];
+    const query = commandState.query.toLowerCase();
+    if (!query) return COMMANDS;
+    return COMMANDS.filter((command) => {
+      const title = command.title.toLowerCase();
+      return command.command.startsWith(query) || title.includes(query);
+    });
+  }, [commandState]);
+  const statusLabel = generateError
+    ? generateError
+    : saveError
+    ? saveError
+    : isGenerating
+    ? "Génération…"
+    : isSaving
+    ? "Enregistrement…"
+    : isDirty
+    ? "Modifications non enregistrées"
+    : "Synchronisé";
+
+  useEffect(() => {
+    selectionRef.current = selection;
+  }, [selection]);
+
+  useEffect(() => {
+    if (isGenerateWaiting) return;
+    setGenerateAnchor(null);
+    generateMeasureRef.current = null;
+    generateInsertIndexRef.current = null;
+  }, [isGenerateWaiting]);
+
+  useEffect(() => {
+    draftContentRef.current = draftContent;
+  }, [draftContent]);
+
+  useEffect(() => {
+    if (!selectedNoteId) {
+      setCommandState(null);
+      commandDismissedRef.current = null;
+      return;
+    }
+    if (isGenerating) {
+      setCommandState(null);
+      return;
+    }
+    if (selection.start !== selection.end) {
+      setCommandState(null);
+      return;
+    }
+    const next = findSlashCommand(draftContent, selection.start);
+    const dismissed = commandDismissedRef.current;
+    if (
+      next &&
+      dismissed &&
+      editVersionRef.current === dismissed.version &&
+      next.start === dismissed.start &&
+      next.end === dismissed.end &&
+      next.query === dismissed.query
+    ) {
+      setCommandState(null);
+      return;
+    }
+    if (next) commandDismissedRef.current = null;
+    setCommandState((prev) => {
+      if (!next) return null;
+      if (prev && prev.start === next.start && prev.end === next.end && prev.query === next.query) return prev;
+      return next;
+    });
+  }, [draftContent, selection, selectedNoteId, isGenerating]);
+
+  useEffect(() => {
+    if (commandState) return;
+    setCommandAnchor(null);
+  }, [commandState]);
+
+  useEffect(() => {
+    if (Platform.OS !== "web") return;
+    return () => {
+      webCaretMirrorRef.current?.remove();
+      webCaretMirrorRef.current = null;
+    };
+  }, []);
 
   function selectNote(note: Note) {
     setSelectedNoteId(note.id);
@@ -58,6 +219,17 @@ export function NotesScreen({
     setDraftContent(note.content);
     setIsDirty(false);
     setSaveError(null);
+    setGenerateError(null);
+    setCommandState(null);
+    commandDismissedRef.current = null;
+    generateAbortRef.current?.abort();
+    setIsGenerating(false);
+    setIsGenerateWaiting(false);
+    setGenerateAnchor(null);
+    generateMeasureRef.current = null;
+    generateInsertIndexRef.current = null;
+    const nextPos = note.content.length;
+    setSelection({ start: nextPos, end: nextPos });
   }
 
   function patchNoteLocal(noteId: string, patch: Partial<Note>) {
@@ -66,6 +238,284 @@ export function NotesScreen({
       next.sort((a, b) => (a.updated_at < b.updated_at ? 1 : -1));
       return next;
     });
+  }
+
+  function applyContentUpdate(noteId: string, content: string) {
+    editVersionRef.current += 1;
+    setDraftContent(content);
+    draftContentRef.current = content;
+    setIsDirty(true);
+    setGenerateError(null);
+    patchNoteLocal(noteId, { content, updated_at: nowIso() });
+  }
+
+  function findSlashCommand(content: string, cursor: number) {
+    const safeCursor = Math.max(0, Math.min(cursor, content.length));
+    const lineStart = content.lastIndexOf("\n", safeCursor - 1) + 1;
+    const beforeCursor = content.slice(lineStart, safeCursor);
+    const slashIndex = beforeCursor.lastIndexOf("/");
+    if (slashIndex === -1) return null;
+    if (slashIndex > 0) {
+      const prevChar = beforeCursor[slashIndex - 1];
+      if (prevChar && !/\s/.test(prevChar)) return null;
+    }
+    const query = beforeCursor.slice(slashIndex + 1);
+    if (/\s/.test(query)) return null;
+    return { start: lineStart + slashIndex, end: safeCursor, query };
+  }
+
+  function findGenerateCommandRange(content: string, cursor: number) {
+    const safeCursor = Math.max(0, Math.min(cursor, content.length));
+    const lineStart = content.lastIndexOf("\n", safeCursor - 1) + 1;
+    let lineEnd = content.indexOf("\n", safeCursor);
+    if (lineEnd === -1) lineEnd = content.length;
+    const line = content.slice(lineStart, lineEnd);
+    if (line.trim() !== "/generate") return null;
+    return { lineStart, lineEnd };
+  }
+
+  function stripCommandLine(content: string, range: { lineStart: number; lineEnd: number }) {
+    const after =
+      range.lineEnd < content.length && content[range.lineEnd] === "\n" ? range.lineEnd + 1 : range.lineEnd;
+    return content.slice(0, range.lineStart) + content.slice(after);
+  }
+
+  function measureWebCommandAnchor(cursor: number) {
+    if (Platform.OS !== "web") return null;
+    if (typeof document === "undefined" || typeof window === "undefined") return null;
+    const wrap = document.querySelector("[data-testid='notes-editor-body-wrap']");
+    const textarea = document.querySelector("[data-testid='notes-editor-body-input']");
+    if (!(wrap instanceof HTMLElement) || !(textarea instanceof HTMLTextAreaElement)) return null;
+
+    const safeCursor = Math.max(0, Math.min(cursor, textarea.value.length));
+    const mirror = (() => {
+      if (webCaretMirrorRef.current) return webCaretMirrorRef.current;
+      const div = document.createElement("div");
+      div.setAttribute("data-notia-caret-mirror", "true");
+      const style = div.style;
+      style.position = "absolute";
+      style.visibility = "hidden";
+      style.top = "0";
+      style.left = "-9999px";
+      style.whiteSpace = "pre-wrap";
+      style.wordWrap = "break-word";
+      style.pointerEvents = "none";
+      document.body.appendChild(div);
+      webCaretMirrorRef.current = div;
+      return div;
+    })();
+
+    const computed = window.getComputedStyle(textarea);
+    const properties = [
+      "direction",
+      "box-sizing",
+      "width",
+      "height",
+      "overflow-x",
+      "overflow-y",
+      "border-top-width",
+      "border-right-width",
+      "border-bottom-width",
+      "border-left-width",
+      "padding-top",
+      "padding-right",
+      "padding-bottom",
+      "padding-left",
+      "font-style",
+      "font-variant",
+      "font-weight",
+      "font-stretch",
+      "font-size",
+      "font-family",
+      "line-height",
+      "text-align",
+      "text-transform",
+      "text-indent",
+      "text-decoration",
+      "letter-spacing",
+      "word-spacing",
+      "tab-size",
+      "-moz-tab-size",
+    ];
+
+    mirror.textContent = "";
+    for (const prop of properties) {
+      mirror.style.setProperty(prop, computed.getPropertyValue(prop));
+    }
+    mirror.style.whiteSpace = "pre-wrap";
+    mirror.style.wordWrap = "break-word";
+    mirror.style.overflow = "auto";
+
+    mirror.textContent = textarea.value.slice(0, safeCursor);
+    const marker = document.createElement("span");
+    marker.textContent = textarea.value.slice(safeCursor) || ".";
+    mirror.appendChild(marker);
+
+    mirror.scrollTop = textarea.scrollTop;
+    mirror.scrollLeft = textarea.scrollLeft;
+
+    const markerRect = marker.getBoundingClientRect();
+    const mirrorRect = mirror.getBoundingClientRect();
+    const wrapRect = wrap.getBoundingClientRect();
+    const textareaRect = textarea.getBoundingClientRect();
+
+    const x = textareaRect.left - wrapRect.left + (markerRect.left - mirrorRect.left);
+    const y = textareaRect.top - wrapRect.top + (markerRect.top - mirrorRect.top) + markerRect.height;
+    return { x, y };
+  }
+
+  function handleCommandMeasureLayout(event: NativeSyntheticEvent<TextLayoutEventData>) {
+    const lines = event.nativeEvent.lines ?? [];
+    if (!lines.length) return;
+    const lastLine = lines[lines.length - 1];
+    commandMeasureRef.current = lastLine;
+    const nextX = lastLine.x + lastLine.width;
+    const nextY = lastLine.y + lastLine.height - scrollOffsetRef.current;
+    setCommandAnchor({ x: nextX, y: nextY });
+  }
+
+  function handleGenerateMeasureLayout(event: NativeSyntheticEvent<TextLayoutEventData>) {
+    const lines = event.nativeEvent.lines ?? [];
+    if (!lines.length) return;
+    const lastLine = lines[lines.length - 1];
+    generateMeasureRef.current = lastLine;
+    const nextX = lastLine.x + lastLine.width;
+    const nextY = lastLine.y + lastLine.height - scrollOffsetRef.current;
+    setGenerateAnchor({ x: nextX, y: nextY });
+  }
+
+  useEffect(() => {
+    if (!commandState) return;
+    const anchor = measureWebCommandAnchor(commandState.end);
+    if (anchor) setCommandAnchor(anchor);
+  }, [commandState, draftContent, selection.start, selection.end, editorLayout.width, editorLayout.height]);
+
+  useEffect(() => {
+    if (!isGenerateWaiting) return;
+    if (Platform.OS !== "web") return;
+    const cursor = generateInsertIndexRef.current ?? selection.start;
+    const anchor = measureWebCommandAnchor(cursor);
+    if (anchor) setGenerateAnchor(anchor);
+  }, [isGenerateWaiting, draftContent, selection.start, selection.end, editorLayout.width, editorLayout.height]);
+
+  function dismissCommandMenu(persist: boolean) {
+    setCommandState((prev) => {
+      if (persist && prev) {
+        commandDismissedRef.current = { ...prev, version: editVersionRef.current };
+      } else if (!persist) {
+        commandDismissedRef.current = null;
+      }
+      return null;
+    });
+  }
+
+  function applyCommand(option: CommandOption) {
+    if (!selectedNoteId || !commandState) return;
+    const currentContent = draftContentRef.current;
+    const nextContent =
+      currentContent.slice(0, commandState.start) + option.insertText + currentContent.slice(commandState.end);
+    applyContentUpdate(selectedNoteId, nextContent);
+    commandDismissedRef.current = null;
+    const nextCursor = commandState.start + option.insertText.length;
+    setSelection({ start: nextCursor, end: nextCursor });
+    selectionRef.current = { start: nextCursor, end: nextCursor };
+    setCommandState(null);
+  }
+
+  function formatGenerateError(error: unknown) {
+    if (!(error instanceof Error)) return "Erreur de génération.";
+    const message = error.message.trim();
+    const normalized = message.toLowerCase();
+    if (normalized.includes("ai not configured")) {
+      return "IA non configurée. Ajoute OPENAI_API_KEY côté backend.";
+    }
+    if (normalized.includes("timeout") || normalized.includes("timed out") || normalized.includes("expir")) {
+      return "La génération a expiré. Réessaie /generate.";
+    }
+    if (normalized.includes("network") || normalized.includes("fetch")) {
+      return "Problème réseau. Réessaie /generate.";
+    }
+    return message || "Erreur de génération.";
+  }
+
+  function cancelGenerate(message?: string) {
+    generateAbortRef.current?.abort();
+    generateAbortRef.current = null;
+    if (message) setGenerateError(message);
+    setIsGenerating(false);
+    setIsGenerateWaiting(false);
+    setGenerateAnchor(null);
+    generateMeasureRef.current = null;
+    generateInsertIndexRef.current = null;
+  }
+
+  async function runGenerate(insertIndex: number, baseContent: string) {
+    if (!selectedNoteId) return;
+
+    generateAbortRef.current?.abort();
+    const controller = new AbortController();
+    generateAbortRef.current = controller;
+    const requestId = generateRequestIdRef.current + 1;
+    generateRequestIdRef.current = requestId;
+    setIsGenerating(true);
+    generateInsertIndexRef.current = insertIndex;
+    generateMeasureRef.current = null;
+    setGenerateAnchor(null);
+    setIsGenerateWaiting(true);
+    setGenerateError(null);
+
+    const baseBefore = baseContent.slice(0, insertIndex);
+    const baseAfter = baseContent.slice(insertIndex);
+    let suggestion = "";
+    let cursorAtEnd = insertIndex;
+    let sawChunk = false;
+    try {
+      await api.generateContinuationStream(token, { content: baseContent, cursor: insertIndex }, {
+        signal: controller.signal,
+        onChunk: (chunk) => {
+          if (controller.signal.aborted || generateRequestIdRef.current !== requestId) return;
+          if (!sawChunk) {
+            sawChunk = true;
+            setIsGenerateWaiting(false);
+          }
+          const previousCursor = cursorAtEnd;
+          suggestion += chunk;
+          cursorAtEnd = insertIndex + suggestion.length;
+          const nextContent = baseBefore + suggestion + baseAfter;
+          applyContentUpdate(selectedNoteId, nextContent);
+
+          const currentSelection = selectionRef.current;
+          if (currentSelection.start === currentSelection.end && currentSelection.start === previousCursor) {
+            setSelection({ start: cursorAtEnd, end: cursorAtEnd });
+            selectionRef.current = { start: cursorAtEnd, end: cursorAtEnd };
+          }
+        },
+      });
+      if (controller.signal.aborted || generateRequestIdRef.current !== requestId) return;
+      if (!suggestion.trim()) {
+        setGenerateError("La génération n'a rien retourné.");
+        return;
+      }
+    } catch (e) {
+      if (controller.signal.aborted) return;
+      setGenerateError(formatGenerateError(e));
+    } finally {
+      if (generateRequestIdRef.current === requestId) {
+        setIsGenerating(false);
+        setIsGenerateWaiting(false);
+        setGenerateAnchor(null);
+        generateMeasureRef.current = null;
+        generateInsertIndexRef.current = null;
+      }
+    }
+  }
+
+  function queueGenerateFromCommand() {
+    if (!selectedNoteId) return;
+    const cursor = selectionRef.current.start;
+    const commandRange = findGenerateCommandRange(draftContentRef.current, cursor);
+    if (!commandRange) return;
+    pendingGenerateRef.current = cursor;
   }
 
   useEffect(() => {
@@ -99,6 +549,7 @@ export function NotesScreen({
       cancelled = true;
       if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
       saveAbortRef.current?.abort();
+      generateAbortRef.current?.abort();
     };
   }, [token]);
 
@@ -327,6 +778,7 @@ export function NotesScreen({
                   editVersionRef.current += 1;
                   setDraftTitle(title);
                   setIsDirty(true);
+                  setGenerateError(null);
                   patchNoteLocal(selectedNote.id, { title, updated_at: nowIso() });
                 }}
                 placeholder="Nouvelle page"
@@ -336,25 +788,157 @@ export function NotesScreen({
               />
               <View style={styles.saveStatusBanner}>
                 <Text style={styles.saveStatusText} numberOfLines={1}>
-                  {saveError ? saveError : isSaving ? "Enregistrement…" : isDirty ? "Modifications non enregistrées" : "Synchronisé"}
+                  {statusLabel}
                 </Text>
               </View>
             </View>
-            <TextInput
-              value={draftContent}
-              onChangeText={(content) => {
-                editVersionRef.current += 1;
-                setDraftContent(content);
-                setIsDirty(true);
-                patchNoteLocal(selectedNote.id, { content, updated_at: nowIso() });
+            <View
+              style={styles.editorBodyWrap}
+              testID="notes-editor-body-wrap"
+              onLayout={(event) => {
+                const { width, height } = event.nativeEvent.layout;
+                setEditorLayout({ width, height });
               }}
-              placeholder="Écris ta note…"
-              placeholderTextColor={theme.colors.placeholder}
-              multiline
-              underlineColorAndroid="transparent"
-              style={[styles.editorBody, webNoOutline]}
-              textAlignVertical="top"
-            />
+            >
+              <TextInput
+                value={draftContent}
+                onChangeText={(content) => {
+                  if (isGenerating) {
+                    cancelGenerate("Le contenu a changé, relance /generate.");
+                  }
+                  const pendingCursor = pendingGenerateRef.current;
+                  if (pendingCursor !== null) {
+                    pendingGenerateRef.current = null;
+                    const commandRange = findGenerateCommandRange(content, pendingCursor);
+                    if (commandRange) {
+                      const nextContent = stripCommandLine(content, commandRange);
+                      applyContentUpdate(selectedNote.id, nextContent);
+                      const insertIndex = commandRange.lineStart;
+                      setSelection({ start: insertIndex, end: insertIndex });
+                      selectionRef.current = { start: insertIndex, end: insertIndex };
+                      void runGenerate(insertIndex, nextContent);
+                      return;
+                    }
+                  }
+                  applyContentUpdate(selectedNote.id, content);
+                }}
+                onBlur={() => dismissCommandMenu(false)}
+                onPressIn={() => {
+                  if (commandState) dismissCommandMenu(true);
+                }}
+                onSelectionChange={(event) => {
+                  const nextSelection = event.nativeEvent.selection;
+                  setSelection(nextSelection);
+                  selectionRef.current = nextSelection;
+                }}
+                onKeyPress={(event) => {
+                  const key = event.nativeEvent.key;
+                  if (key === "Escape") {
+                    dismissCommandMenu(true);
+                    return;
+                  }
+                  if (key === "Enter" || key === "Return") {
+                    queueGenerateFromCommand();
+                  }
+                }}
+                onScroll={(event) => {
+                  const offset = event.nativeEvent.contentOffset.y;
+                  scrollOffsetRef.current = offset;
+                  if (Platform.OS === "web") {
+                    if (isGenerateWaiting) {
+                      const cursor = generateInsertIndexRef.current ?? selectionRef.current.start;
+                      const anchor = measureWebCommandAnchor(cursor);
+                      if (anchor) setGenerateAnchor(anchor);
+                    }
+                    if (!commandState) return;
+                    const anchor = measureWebCommandAnchor(selectionRef.current.start);
+                    if (anchor) setCommandAnchor(anchor);
+                    return;
+                  }
+                  if (isGenerateWaiting && generateMeasureRef.current) {
+                    const line = generateMeasureRef.current;
+                    setGenerateAnchor({ x: line.x + line.width, y: line.y + line.height - offset });
+                  }
+                  if (!commandMeasureRef.current) return;
+                  const line = commandMeasureRef.current;
+                  setCommandAnchor({ x: line.x + line.width, y: line.y + line.height - offset });
+                }}
+                placeholder="Écris ta note…"
+                placeholderTextColor={theme.colors.placeholder}
+                multiline
+                underlineColorAndroid="transparent"
+                testID="notes-editor-body-input"
+                style={[styles.editorBody, webNoOutline, isGenerateWaiting ? webCaretHidden : undefined]}
+                textAlignVertical="top"
+                selection={selection}
+                caretHidden={isGenerateWaiting}
+              />
+              {isGenerateWaiting && Platform.OS !== "web" && editorLayout.width > 0 ? (
+                <Text style={[styles.editorBody, styles.editorBodyMeasure, { width: editorLayout.width }]} onTextLayout={handleGenerateMeasureLayout}>
+                  {draftContent.slice(0, generateInsertIndexRef.current ?? selection.start) || " "}
+                </Text>
+              ) : null}
+              {isGenerateWaiting && generateAnchor && editorLayout.width > 0 && editorLayout.height > 0 ? (
+                <View
+                  pointerEvents="none"
+                  style={[
+                    styles.generateSpinner,
+                    {
+                      left: clamp(generateAnchor.x - 2, 0, Math.max(0, editorLayout.width - 16)),
+                      top: clamp(generateAnchor.y - 19, 0, Math.max(0, editorLayout.height - 16)),
+                    },
+                  ]}
+                >
+                  <ActivityIndicator size="small" color={theme.colors.textSubtle} />
+                </View>
+              ) : null}
+              {commandState && visibleCommands.length > 0 && editorLayout.width > 0 ? (
+                <>
+                  <Text
+                    style={[styles.editorBody, styles.editorBodyMeasure, { width: editorLayout.width }]}
+                    onTextLayout={handleCommandMeasureLayout}
+                  >
+                    {draftContent.slice(0, commandState.end) || " "}
+                  </Text>
+                  {commandAnchor ? (
+                    <View
+                      style={[
+                        styles.commandMenu,
+                        {
+                          width: Math.min(commandMenuWidth, Math.max(0, editorLayout.width - 16)),
+                          left: (() => {
+                            const menuWidth = Math.min(commandMenuWidth, Math.max(0, editorLayout.width - 16));
+                            return clamp(commandAnchor.x + 8, 8, Math.max(8, editorLayout.width - menuWidth - 8));
+                          })(),
+                          top: (() => {
+                            const menuHeight = commandMenuPadding * 2 + commandMenuRowHeight * visibleCommands.length;
+                            if (editorLayout.height === 0) return Math.max(8, commandAnchor.y + 8);
+                            const below = commandAnchor.y + 8;
+                            const above = commandAnchor.y - menuHeight - 8;
+                            const preferred = below + menuHeight > editorLayout.height && above > 8 ? above : below;
+                            return clamp(preferred, 8, Math.max(8, editorLayout.height - menuHeight - 8));
+                          })(),
+                        },
+                      ]}
+                    >
+                      {visibleCommands.map((command) => (
+                        <Pressable
+                          key={command.id}
+                          onPress={() => applyCommand(command)}
+                          style={({ pressed }) => [styles.commandItem, pressed && styles.commandItemPressed]}
+                        >
+                          <View style={styles.commandItemText}>
+                            <Text style={styles.commandItemTitle}>{command.title}</Text>
+                            <Text style={styles.commandItemDescription}>{command.description}</Text>
+                          </View>
+                          <Text style={styles.commandItemShortcut}>/{command.command}</Text>
+                        </Pressable>
+                      ))}
+                    </View>
+                  ) : null}
+                </>
+              ) : null}
+            </View>
           </View>
         )}
       </View>
@@ -446,6 +1030,7 @@ function createStyles(theme: Theme) {
       justifyContent: "space-between",
       gap: 12,
     },
+    editorBodyWrap: { flex: 1, position: "relative" },
     editorTitle: {
       color: theme.colors.text,
       fontSize: 38,
@@ -461,7 +1046,15 @@ function createStyles(theme: Theme) {
       paddingVertical: 6,
     },
     saveStatusText: { color: theme.colors.textSubtle, fontSize: 12, fontWeight: "600" },
+    generateSpinner: { position: "absolute", width: 16, height: 16, zIndex: 11, alignItems: "center", justifyContent: "center" },
     editorBody: { flex: 1, color: editorBodyColor, fontSize: 16, lineHeight: 22, paddingVertical: 6 },
+    editorBodyMeasure: {
+      position: "absolute",
+      opacity: 0,
+      left: 0,
+      top: 0,
+      pointerEvents: "none",
+    },
 
     emptyState: { flex: 1, alignItems: "center", justifyContent: "center", padding: 24 },
     emptyTitle: { color: theme.colors.text, fontSize: 18, fontWeight: "700" },
@@ -472,6 +1065,35 @@ function createStyles(theme: Theme) {
     sidebarLoading: { paddingTop: 18 },
 
     pressed: { opacity: 0.8 },
+
+    commandMenu: {
+      position: "absolute",
+      backgroundColor: theme.colors.panel,
+      borderRadius: 12,
+      borderWidth: 1,
+      borderColor: theme.colors.border,
+      paddingVertical: commandMenuPadding,
+      shadowColor: "#000",
+      shadowOpacity: 0.2,
+      shadowRadius: 10,
+      shadowOffset: { width: 0, height: 6 },
+      elevation: 12,
+      zIndex: 10,
+    },
+    commandItem: {
+      minHeight: commandMenuRowHeight,
+      paddingHorizontal: 12,
+      paddingVertical: 8,
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "space-between",
+      gap: 8,
+    },
+    commandItemPressed: { backgroundColor: theme.colors.buttonMuted, borderRadius: 10 },
+    commandItemText: { flex: 1 },
+    commandItemTitle: { color: theme.colors.text, fontSize: 14, fontWeight: "600" },
+    commandItemDescription: { color: theme.colors.textMuted, fontSize: 12, marginTop: 2 },
+    commandItemShortcut: { color: theme.colors.textSubtle, fontSize: 12, fontWeight: "600" },
 
     sidebarBackdrop: {
       position: "absolute",
