@@ -2,6 +2,7 @@
 Started: 2024-01-15
 
 ## Codebase Patterns
+- Notes: Disable delete while in-flight and reset selection after deleting the active note
 - Migrations: IF NOT EXISTS
 - Types: Export from actions.ts
 - IA: AbortController + request id + content version guard before insert
@@ -33,4 +34,10 @@ Started: 2024-01-15
 - **Learnings:**
   - Séparer l'aperçu IA du contenu pour éviter les sauvegardes pendant le streaming.
   - Émettre des events SSE `delta/error/done` pour piloter le flux côté client.
+---
+## 2026-01-12 - US-006
+- Ajout de la suppression de notes avec bouton dédié dans la liste + gestion d'erreur.
+- Files changed: `mobile/src/screens/NotesScreen.tsx`, `mobile/src/__tests__/NotesScreen.test.tsx`, `mobile/package.json`, `README.md`, `AGENTS.md`, `progress.txt`.
+- **Learnings:**
+  - Désactiver la suppression pendant la requête et préserver la sélection si l'appel échoue.
 ---

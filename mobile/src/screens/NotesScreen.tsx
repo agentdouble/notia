@@ -103,6 +103,8 @@ export function NotesScreen({
   const [isGenerating, setIsGenerating] = useState(false);
   const [isGenerateWaiting, setIsGenerateWaiting] = useState(false);
   const [generateError, setGenerateError] = useState<string | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [deletingNoteIds, setDeletingNoteIds] = useState<Set<string>>(() => new Set());
   const [selection, setSelection] = useState({ start: 0, end: 0 });
   const [commandState, setCommandState] = useState<{ start: number; end: number; query: string } | null>(null);
   const [commandAnchor, setCommandAnchor] = useState<{ x: number; y: number } | null>(null);
@@ -220,6 +222,7 @@ export function NotesScreen({
     setIsDirty(false);
     setSaveError(null);
     setGenerateError(null);
+    setDeleteError(null);
     setCommandState(null);
     commandDismissedRef.current = null;
     generateAbortRef.current?.abort();
@@ -230,6 +233,36 @@ export function NotesScreen({
     generateInsertIndexRef.current = null;
     const nextPos = note.content.length;
     setSelection({ start: nextPos, end: nextPos });
+  }
+
+  function resetSelection() {
+    setSelectedNoteId(null);
+    setDraftTitle("");
+    setDraftContent("");
+    setIsDirty(false);
+    setSaveError(null);
+    setGenerateError(null);
+    setCommandState(null);
+    commandDismissedRef.current = null;
+    generateAbortRef.current?.abort();
+    setIsGenerating(false);
+    setIsGenerateWaiting(false);
+    setGenerateAnchor(null);
+    generateMeasureRef.current = null;
+    generateInsertIndexRef.current = null;
+    setSelection({ start: 0, end: 0 });
+  }
+
+  function setNoteDeleting(noteId: string, isDeleting: boolean) {
+    setDeletingNoteIds((prev) => {
+      const next = new Set(prev);
+      if (isDeleting) {
+        next.add(noteId);
+      } else {
+        next.delete(noteId);
+      }
+      return next;
+    });
   }
 
   function patchNoteLocal(noteId: string, patch: Partial<Note>) {
@@ -530,9 +563,7 @@ export function NotesScreen({
         if (data.length) {
           selectNote(data[0]);
         } else {
-          setSelectedNoteId(null);
-          setDraftTitle("");
-          setDraftContent("");
+          resetSelection();
         }
       })
       .catch((e) => {
@@ -619,6 +650,7 @@ export function NotesScreen({
 
   async function createNote() {
     setError(null);
+    setDeleteError(null);
     try {
       if (isDirty && selectedNoteId) {
         const ok = await persistDraft(selectedNoteId, draftTitle, draftContent, editVersionRef.current);
@@ -631,6 +663,47 @@ export function NotesScreen({
     } catch (e) {
       const message = e instanceof Error ? e.message : "Erreur lors de la création.";
       setError(message);
+    }
+  }
+
+  async function deleteNoteItem(note: Note) {
+    if (deletingNoteIds.has(note.id)) return;
+    setDeleteError(null);
+    setNoteDeleting(note.id, true);
+
+    if (note.id === selectedNoteId) {
+      if (saveTimeoutRef.current) {
+        clearTimeout(saveTimeoutRef.current);
+        saveTimeoutRef.current = null;
+      }
+      saveAbortRef.current?.abort();
+      setIsSaving(false);
+      cancelGenerate();
+    }
+
+    try {
+      await api.deleteNote(token, note.id);
+      let nextSelected: Note | null = null;
+      setNotes((prev) => {
+        const next = prev.filter((item) => item.id !== note.id);
+        if (note.id === selectedNoteId) {
+          nextSelected = next[0] ?? null;
+        }
+        return next;
+      });
+
+      if (note.id === selectedNoteId) {
+        if (nextSelected) {
+          selectNote(nextSelected);
+        } else {
+          resetSelection();
+        }
+      }
+    } catch (e) {
+      const message = e instanceof Error ? e.message : "Erreur lors de la suppression.";
+      setDeleteError(message);
+    } finally {
+      setNoteDeleting(note.id, false);
     }
   }
 
@@ -694,6 +767,13 @@ export function NotesScreen({
             <Text style={styles.newButtonText}>+ Nouvelle</Text>
           </Pressable>
         </View>
+        {deleteError ? (
+          <View style={styles.sidebarError}>
+            <Text style={styles.sidebarErrorText} testID="notes-delete-error">
+              {deleteError}
+            </Text>
+          </View>
+        ) : null}
 
         {loading ? (
           <View style={styles.sidebarLoading}>
@@ -706,33 +786,44 @@ export function NotesScreen({
             contentContainerStyle={styles.notesListContent}
             renderItem={({ item }) => {
               const isSelected = item.id === selectedNoteId;
+              const isDeleting = deletingNoteIds.has(item.id);
               return (
-                <Pressable
-                  onPress={async () => {
-                    if (item.id === selectedNoteId) return;
-                    if (isDirty && selectedNoteId) {
-                      const ok = await persistDraft(selectedNoteId, draftTitle, draftContent, editVersionRef.current);
-                      if (!ok) return;
-                    }
-                    selectNote(item);
-                    if (isDrawer) closeSidebar();
-                  }}
-                  style={({ pressed }) => [
-                    styles.noteRow,
-                    isSelected && styles.noteRowSelected,
-                    webCursorPointer,
-                    pressed && styles.pressed,
-                  ]}
-                >
-                  <View style={styles.noteRowText}>
-                    <Text style={styles.noteTitle} numberOfLines={1}>
-                      {item.title || "Sans titre"}
-                    </Text>
-                    <Text style={styles.noteMeta} numberOfLines={1}>
-                      {formatSidebarTimestamp(item.updated_at)}
-                    </Text>
-                  </View>
-                </Pressable>
+                <View style={[styles.noteRow, isSelected && styles.noteRowSelected]}>
+                  <Pressable
+                    onPress={async () => {
+                      if (item.id === selectedNoteId) return;
+                      if (isDirty && selectedNoteId) {
+                        const ok = await persistDraft(selectedNoteId, draftTitle, draftContent, editVersionRef.current);
+                        if (!ok) return;
+                      }
+                      selectNote(item);
+                      if (isDrawer) closeSidebar();
+                    }}
+                    style={({ pressed }) => [styles.noteRowPressable, webCursorPointer, pressed && styles.pressed]}
+                  >
+                    <View style={styles.noteRowText}>
+                      <Text style={styles.noteTitle} numberOfLines={1}>
+                        {item.title || "Sans titre"}
+                      </Text>
+                      <Text style={styles.noteMeta} numberOfLines={1}>
+                        {formatSidebarTimestamp(item.updated_at)}
+                      </Text>
+                    </View>
+                  </Pressable>
+                  <Pressable
+                    testID={`notes-list-delete-${item.id}`}
+                    onPress={() => deleteNoteItem(item)}
+                    disabled={isDeleting}
+                    style={({ pressed }) => [
+                      styles.noteDeleteButton,
+                      webCursorPointer,
+                      pressed && styles.noteDeleteButtonPressed,
+                      isDeleting && styles.noteDeleteButtonDisabled,
+                    ]}
+                  >
+                    <Text style={styles.noteDeleteButtonText}>{isDeleting ? "..." : "Suppr"}</Text>
+                  </Pressable>
+                </View>
               );
             }}
           />
@@ -1014,11 +1105,26 @@ function createStyles(theme: Theme) {
       paddingVertical: 10,
       marginBottom: 6,
       backgroundColor: "transparent",
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 10,
     },
     noteRowSelected: { backgroundColor: theme.colors.button },
+    noteRowPressable: { flex: 1 },
     noteRowText: { gap: 2 },
     noteTitle: { color: theme.colors.text, fontSize: 14, fontWeight: "600" },
     noteMeta: { color: theme.colors.textMuted, fontSize: 12 },
+    noteDeleteButton: {
+      paddingHorizontal: 8,
+      paddingVertical: 6,
+      borderRadius: 8,
+      borderWidth: 1,
+      borderColor: theme.colors.border,
+      backgroundColor: theme.colors.panelMuted,
+    },
+    noteDeleteButtonPressed: { backgroundColor: theme.colors.buttonMuted },
+    noteDeleteButtonDisabled: { opacity: 0.6 },
+    noteDeleteButtonText: { color: theme.colors.textMuted, fontSize: 12, fontWeight: "600" },
 
     main: { flex: 1, paddingHorizontal: 28, paddingTop: 22 },
     mainWide: { paddingHorizontal: 52 },
@@ -1063,6 +1169,8 @@ function createStyles(theme: Theme) {
     ctaText: { color: theme.colors.text, fontSize: 14, fontWeight: "700" },
 
     sidebarLoading: { paddingTop: 18 },
+    sidebarError: { paddingHorizontal: 12, paddingBottom: 8 },
+    sidebarErrorText: { color: theme.colors.error, fontSize: 12 },
 
     pressed: { opacity: 0.8 },
 

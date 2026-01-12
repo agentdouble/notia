@@ -1,22 +1,19 @@
 {
-  "branchName": "ralph/IA",
+  "branchName": "ralph/notes-ux",
   "userStories": [
     {
-      "id": "US-005",
-      "title": "Integrer le streaming pour la génération d'ia notamment avec /generate",
+      "id": "US-006",
+      "title": "Supprimer une note depuis la liste",
       "acceptanceCriteria": [
-        "Taper '/generate' sur une ligne puis valider lance la generation et retire la ligne de commande du contenu",
-        "La generation est en streaming : un apercu du texte apparait progressivement (sans attendre la fin)",
-        "A la fin du streaming, la suggestion complete est inseree a la position initiale du curseur (non destructif)",
-        "Si le contenu a change pendant la generation, la suggestion n'est pas inseree (message explicite) et l'aperçu est abandonne",
-        "Les requetes sont annulables (AbortController) : annuler stoppe immediatement le flux et ne laisse aucun texte partiel insere",
-        "Latest request wins : relancer '/generate' annule la requete en cours, sans doublons ni courses",
-        "Les cles IA ne vont jamais cote client ; les appels passent par le backend avec auth utilisateur, y compris en streaming",
-        "Timeouts + erreurs reseau sont gerees proprement (message actionnable), sans casser l'edition"
+        "Chaque item de note dans la liste expose un bouton de suppression avec `data-testid=\"notes-list-delete-<id>\"`.",
+        "Après une suppression réussie, la note supprimée n’apparaît plus dans la liste.",
+        "Test `mobile/src/__tests__/NotesScreen.test.tsx` couvre la suppression nominale (appel `api.deleteNote` + retrait de la note) et l’échec (message d’erreur affiché + note conservée).",
+        "`cd mobile && npm run typecheck` retourne code 0.",
+        "`cd mobile && npm test` retourne code 0."
       ],
       "priority": 1,
       "passes": true,
-      "notes": "Streaming recommande via SSE/chunked response. Garder une insertion finale atomique (apercu pendant le flux, insertion seulement si la version du contenu n'a pas change). Ne pas spammer les sauvegardes pendant le streaming."
-    }
+      "notes": ""
+    }    
   ]
 }
