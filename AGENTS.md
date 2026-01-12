@@ -99,3 +99,4 @@ Objectif : faire évoluer l’app **rapidement** sans dette technique, sans cass
 - Menu slash: mesurer la position du curseur via `Text` (onTextLayout) + offset de scroll pour ancrer le menu.
 - Menu slash: fermer via tap/Echap sans réouverture immédiate tant que le contenu ne change pas.
 - IA streaming: diffuser en SSE + aperçu en UI sans modifier le contenu, annuler dès que le contenu change.
+- Notes: désactiver le bouton de suppression pendant la requête et réinitialiser la sélection si la note active est supprimée.
