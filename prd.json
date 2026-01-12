@@ -1,19 +1,50 @@
 {
-  "branchName": "ralph/notes-ux",
+  "branchName": "ralph/cmd",
   "userStories": [
     {
-      "id": "US-006",
-      "title": "Supprimer une note depuis la liste",
+      "id": "US-001",
+      "title": "Pouvoir naviguer dans les commandes dans le panneau avec tab ou cliquer dessus (/generate)",
       "acceptanceCriteria": [
-        "Chaque item de note dans la liste expose un bouton de suppression avec `data-testid=\"notes-list-delete-<id>\"`.",
-        "Après une suppression réussie, la note supprimée n’apparaît plus dans la liste.",
-        "Test `mobile/src/__tests__/NotesScreen.test.tsx` couvre la suppression nominale (appel `api.deleteNote` + retrait de la note) et l’échec (message d’erreur affiché + note conservée).",
-        "`cd mobile && npm run typecheck` retourne code 0.",
-        "`cd mobile && npm test` retourne code 0."
       ],
       "priority": 1,
       "passes": true,
       "notes": ""
-    }    
+    },
+    {
+      "id": "US-002",
+      "title": "rendre effective /todo",
+      "acceptanceCriteria": [
+      ],
+      "priority": 1,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "US-003",
+      "title": "rendre effective /bullet",
+      "acceptanceCriteria": [
+      ],
+      "priority": 1,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "US-004",
+      "title": "ajouter une commande /tableau",
+      "acceptanceCriteria": [
+      ],
+      "priority": 1,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "US-005",
+      "title": "ajouter une commande /tableau",
+      "acceptanceCriteria": [
+      ],
+      "priority": 1,
+      "passes": true,
+      "notes": ""
+    },
   ]
 }
